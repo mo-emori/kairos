@@ -1,0 +1,9 @@
+.venv/
+.conduit-tmp/
+.conduit-temp-probe/
+.env
+__pycache__/
+*.py[cod]
+logs/
+reports/
+
