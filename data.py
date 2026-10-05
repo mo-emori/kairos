@@ -259,5 +259,12 @@ def fetch_research_data(ticker: str, as_of: date | None = None) -> dict[str, Any
         "equity_ratio": _number(financial_record.get("EqAR")) if financial_record else None,
         "per": per, "price_date": price_record.get("Date") if price_record else None,
         "financial_disclosure_date": financial_record.get("DiscDate") if financial_record else None,
-        "company": company, "raw_paths": [str(price_raw_path), str(financial_raw_path)],
+        "metadata": {
+            "source": "J-Quants API V2", "ticker": ticker,
+            "analysis_as_of": analysis_date, "data_as_of": max(used_dates),
+        },
+        # The configured Free plan does not provide index OHLC. Keep unavailable
+        # contexts explicit rather than treating absence as a neutral/zero value.
+        "market": None, "sector": None, "company": company,
+        "raw_paths": [str(price_raw_path), str(financial_raw_path)],
     }

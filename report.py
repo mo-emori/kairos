@@ -55,6 +55,23 @@ def _company_context(company: dict[str, Any] | None) -> str:
     ])
 
 
+def _baseline_context(context: dict[str, Any] | None) -> str:
+    if not context:
+        return "Unavailable"
+    trend = context.get("trend") or {}
+    returns = trend.get("returns") or {}
+    relative = context.get("relative_performance") or {}
+    return "\n".join([
+        f"- Baseline: {context.get('name') or 'Unavailable'}",
+        f"- As-of value: {_value(trend.get('value'))} ({trend.get('date') or 'Unavailable'})",
+        f"- 21 / 63 / 126 / 252 observation returns: {_percent(returns.get('21_observations'))} / "
+        f"{_percent(returns.get('63_observations'))} / {_percent(returns.get('126_observations'))} / "
+        f"{_percent(returns.get('252_observations'))}",
+        f"- Relative performance: "
+        f"{', '.join(f'{key}={_percent(value)}' for key, value in relative.items()) or 'Unavailable'}",
+    ])
+
+
 def render_report(
     research_data: dict[str, Any],
     call_1: dict[str, Any],
@@ -97,6 +114,14 @@ def render_report(
 ## Data as-of
 
 {research_data['data_as_of']}
+
+## Market Context
+
+{_baseline_context(research_data.get('market'))}
+
+## Sector Context
+
+{_baseline_context(research_data.get('sector'))}
 
 ## Company Context
 

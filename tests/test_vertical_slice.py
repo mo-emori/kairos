@@ -15,6 +15,7 @@ class VerticalSliceTest(unittest.TestCase):
             "analysis_as_of": "2026-10-05", "data_as_of": "2026-10-02",
             "price": 3000, "revenue": 100000, "operating_profit": 10000,
             "net_income": 7000, "equity_ratio": 40, "per": 12,
+            "market": None, "sector": None,
             "company": {"historical_comparable": {"period_type": "FY", "period_start": "2025-04-01",
                 "period_end": "2026-03-31", "prior_period_start": None, "prior_period_end": None,
                 "metrics": {"revenue": {"current": 100000, "prior_comparable": None,
@@ -74,7 +75,8 @@ class VerticalSliceTest(unittest.TestCase):
         self.assertEqual(seen["synthesis"], (expected_context, call_1, call_2, False, "local-model"))
         for heading in ("## Human View", "### Fundamental", "### Valuation", "### Bull",
                         "### Bear", "### Risk", "### Contradictions", "### Thesis",
-                        "## Company Context", "### Cash Flow", "### Company Forecast",
+                        "## Market Context", "## Sector Context", "## Company Context",
+                        "### Cash Flow", "### Company Forecast",
                         "### Price Trend (Adjusted Close)", "## Allocation", "## Risk Check"):
             self.assertIn(heading, markdown)
         self.assertIn("トヨタ自動車", markdown)
@@ -82,6 +84,8 @@ class VerticalSliceTest(unittest.TestCase):
         self.assertIn("Investment horizon:** 3 months", markdown)
         self.assertIn("Holding state:** Not held", markdown)
         self.assertIn("Unavailable", markdown)
+        self.assertIn("## Market Context\n\nUnavailable", markdown)
+        self.assertIn("## Sector Context\n\nUnavailable", markdown)
 
 
 if __name__ == "__main__":

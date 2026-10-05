@@ -36,6 +36,12 @@ class JQuantsParsingTest(unittest.TestCase):
         self.assertEqual(result["revenue"], 1000)
         self.assertEqual(result["financial_disclosure_date"], "2025-06-28")
         self.assertEqual(result["data_as_of"], "2025-06-29")
+        self.assertEqual(result["metadata"], {
+            "source": "J-Quants API V2", "ticker": "7203",
+            "analysis_as_of": "2025-06-30", "data_as_of": "2025-06-29",
+        })
+        self.assertIsNone(result["market"])
+        self.assertIsNone(result["sector"])
         self.assertEqual(len(archived), 2)
 
     def test_data_as_of_ignores_newer_unusable_records(self):

@@ -32,6 +32,11 @@ class LlmContextAndSchemaTest(unittest.TestCase):
         self.assertNotIn(json.dumps(call_1), inputs[1])
         self.assertIn("null means unavailable", inputs[0])
         self.assertIn("null means unavailable", inputs[1])
+        for prompt in inputs:
+            self.assertIn("Market context is a broad baseline", prompt)
+            self.assertIn("Sector context is an industry baseline", prompt)
+            self.assertIn("Company context is company-specific evidence", prompt)
+            self.assertIn("must not be treated as causal proof", prompt)
 
     def _capture_synthesis(self, held):
         captured = {}

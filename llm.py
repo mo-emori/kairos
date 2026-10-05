@@ -10,6 +10,12 @@ from openai import OpenAI
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 LOGGER = logging.getLogger("openai")
 
+CONTEXT_GUIDANCE = (
+    "Market context is a broad baseline, Sector context is an industry baseline, and Company context "
+    "is company-specific evidence. Relative performance is descriptive and must not be treated as "
+    "causal proof. null means unavailable and must never be treated as neutral or zero. "
+)
+
 
 def _client() -> OpenAI:
     """Build a client from the local UTF-8 .env without exposing its API key."""
@@ -76,8 +82,7 @@ def positive_analysis(research_data: dict[str, Any], model: str) -> dict[str, An
         "Produce Call 1: concise Fundamental, Valuation, and Bull analysis with concise evidence. "
         "Use only the supplied J-Quants research_data. Do not use outside knowledge, training-memory "
         "facts about the company, future information, or unstated current market information. "
-        "Treat analysis_as_of and data_as_of as strict time boundaries. null means unavailable and must "
-        "never be treated as zero. research_data="
+        "Treat analysis_as_of and data_as_of as strict time boundaries. " + CONTEXT_GUIDANCE + "research_data="
         + json.dumps(research_data, ensure_ascii=False)
     )
     try:
@@ -109,7 +114,7 @@ def bear_risk_analysis(research_data: dict[str, Any], model: str) -> dict[str, A
         "Use only the supplied J-Quants research_data; no Call 1 output, thesis, recommendation, or "
         "conclusions are available. Do not use outside knowledge, training-memory facts about the company, "
         "future information, or unstated current market information. Treat analysis_as_of and data_as_of "
-        "as strict time boundaries. null means unavailable and must never be treated as zero. research_data="
+        "as strict time boundaries. " + CONTEXT_GUIDANCE + "research_data="
         + json.dumps(research_data, ensure_ascii=False)
     )
     try:
@@ -162,7 +167,7 @@ def synthesize_analysis(
         "three-month risk/reward does not support initiating. Use only the supplied payload. "
         "Do not use outside knowledge, training-memory facts about the company, future information, or "
         "unstated current market information. Treat analysis_as_of and data_as_of as strict time boundaries. "
-        "null means unavailable and must never be treated as zero. "
+        + CONTEXT_GUIDANCE +
         "payload=" + json.dumps(payload, ensure_ascii=False)
     )
     try:
