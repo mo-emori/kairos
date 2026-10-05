@@ -35,15 +35,16 @@ class VerticalSliceTest(unittest.TestCase):
             seen["bear"] = (data, model)
             return call_2
 
-        def fake_synthesis(data, positive, bear, model):
-            seen["synthesis"] = (data, positive, bear, model)
+        def fake_synthesis(data, positive, bear, held, model):
+            seen["synthesis"] = (data, positive, bear, held, model)
             return synthesis
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config_path = root / "config.json"
             portfolio_path = root / "portfolio.json"
-            config_path.write_text(json.dumps({"model": "local-model", "max_position_ratio": 0.1,
+            config_path.write_text(json.dumps({"model": "local-model", "investment_horizon": "3 months",
+                                               "max_position_ratio": 0.1,
                                                "min_cash_ratio": 0.2}), encoding="utf-8")
             portfolio_path.write_text(json.dumps(portfolio), encoding="utf-8")
             with patch.multiple(main, CONFIG_PATH=config_path, PORTFOLIO_PATH=portfolio_path,
@@ -56,16 +57,23 @@ class VerticalSliceTest(unittest.TestCase):
 
             markdown = report_path.read_text(encoding="utf-8")
 
-        self.assertEqual(seen["positive"], (research, "local-model"))
-        self.assertEqual(seen["bear"], (research, "local-model"))
+        expected_context = dict(research, investment_horizon="3 months")
+        self.assertEqual(seen["positive"], (expected_context, "local-model"))
+        self.assertEqual(seen["bear"], (expected_context, "local-model"))
+        self.assertNotIn("holding_status", seen["positive"][0])
+        self.assertNotIn("portfolio", seen["positive"][0])
+        self.assertNotIn("holding_status", seen["bear"][0])
+        self.assertNotIn("portfolio", seen["bear"][0])
         self.assertNotIn(call_1, seen["bear"])
-        self.assertEqual(seen["synthesis"], (research, call_1, call_2, "local-model"))
+        self.assertEqual(seen["synthesis"], (expected_context, call_1, call_2, False, "local-model"))
         for heading in ("## Human View", "### Fundamental", "### Valuation", "### Bull",
                         "### Bear", "### Risk", "### Contradictions", "### Thesis",
                         "## Allocation", "## Risk Check"):
             self.assertIn(heading, markdown)
         self.assertIn("トヨタ自動車", markdown)
         self.assertIn("Suggested allocation:** 5.0%", markdown)
+        self.assertIn("Investment horizon:** 3 months", markdown)
+        self.assertIn("Holding state:** Not held", markdown)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ def render_report(
     call_2: dict[str, Any],
     synthesis: dict[str, Any],
     risk_result: dict[str, Any],
+    held: bool,
 ) -> str:
     """Render Human View first, followed by evidence from the full pipeline."""
     allocation = risk_result["suggested_allocation"]
@@ -36,6 +37,8 @@ def render_report(
 - **Risk Check:** {risk_result['status']} — {risk_result['reason']}
 - **Analysis as-of:** {research_data['analysis_as_of']}
 - **Data as-of:** {research_data['data_as_of']}
+- **Investment horizon:** {research_data['investment_horizon']}
+- **Holding state:** {'Held' if held else 'Not held'}
 
 ## Identity
 

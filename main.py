@@ -10,7 +10,7 @@ from typing import Any
 from data import fetch_research_data
 from llm import bear_risk_analysis, positive_analysis, synthesize_analysis
 from report import render_report, save_report
-from risk import evaluate_risk
+from risk import evaluate_risk, is_held
 
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.json"
@@ -51,14 +51,17 @@ def run_analysis(ticker: str, as_of: date | None, model: str | None = None) -> P
     config = load_json(CONFIG_PATH)
     configured_model = model or str(config["model"])
     research_data = fetch_research_data(ticker, as_of)
-    call_1 = positive_analysis(research_data, configured_model)
-    call_2 = bear_risk_analysis(research_data, configured_model)
-    synthesis = synthesize_analysis(research_data, call_1, call_2, configured_model)
+    analysis_context = dict(research_data, investment_horizon=str(config["investment_horizon"]))
+    portfolio = load_json(PORTFOLIO_PATH)
+    held = is_held(portfolio, ticker)
+    call_1 = positive_analysis(analysis_context, configured_model)
+    call_2 = bear_risk_analysis(analysis_context, configured_model)
+    synthesis = synthesize_analysis(analysis_context, call_1, call_2, held, configured_model)
     risk_result = evaluate_risk(
-        synthesis["recommendation"], synthesis["confidence"], research_data, load_json(PORTFOLIO_PATH),
+        synthesis["recommendation"], synthesis["confidence"], research_data, portfolio,
         float(config["max_position_ratio"]), float(config["min_cash_ratio"]),
     )
-    markdown = render_report(research_data, call_1, call_2, synthesis, risk_result)
+    markdown = render_report(analysis_context, call_1, call_2, synthesis, risk_result, held)
     return save_report(markdown, ticker, research_data["analysis_as_of"], REPORTS_DIR)
 
 

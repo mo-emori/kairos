@@ -1,6 +1,6 @@
 import unittest
 
-from risk import evaluate_risk
+from risk import evaluate_risk, is_held
 
 
 RESEARCH = {
@@ -17,6 +17,11 @@ def assess(action="BUY", confidence="high", *, cash=500000, cash_ratio=0.5,
 
 
 class RiskRulesTest(unittest.TestCase):
+    def test_held_requires_positive_target_position_ratio(self):
+        self.assertTrue(is_held({"holdings": [{"ticker": "7203", "position_ratio": 0.01}]}, "7203"))
+        self.assertFalse(is_held({"holdings": [{"ticker": "7203", "position_ratio": 0.0}]}, "7203"))
+        self.assertFalse(is_held({"holdings": []}, "7203"))
+
     def test_buy_high_and_medium_allocations(self):
         self.assertEqual(assess(confidence="high")["suggested_allocation"], 0.1)
         self.assertEqual(assess(confidence="medium")["suggested_allocation"], 0.05)
@@ -52,9 +57,10 @@ class RiskRulesTest(unittest.TestCase):
         self.assertIsNone(result["suggested_allocation"])
 
     def test_non_buy_add_has_no_allocation(self):
+        incomplete = dict(RESEARCH, price=None)
         for action in ("WATCH", "HOLD", "REDUCE", "SELL", "REJECT"):
             with self.subTest(action=action):
-                result = assess(action)
+                result = assess(action, research=incomplete)
                 self.assertEqual(result["status"], "PASS")
                 self.assertIsNone(result["suggested_allocation"])
 

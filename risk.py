@@ -16,6 +16,11 @@ def _position_ratio(portfolio: dict[str, Any], ticker: str) -> float:
     return 0.0
 
 
+def is_held(portfolio: dict[str, Any], ticker: str) -> bool:
+    """Return the minimal holding fact used by recommendation synthesis."""
+    return _position_ratio(portfolio, ticker) > 0
+
+
 def evaluate_risk(
     recommendation: str,
     confidence: str,

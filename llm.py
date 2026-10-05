@@ -123,9 +123,10 @@ def bear_risk_analysis(research_data: dict[str, Any], model: str) -> dict[str, A
 
 
 def synthesize_analysis(
-    research_data: dict[str, Any], call_1: dict[str, Any], call_2: dict[str, Any], model: str,
+    research_data: dict[str, Any], call_1: dict[str, Any], call_2: dict[str, Any], held: bool, model: str,
 ) -> dict[str, Any]:
     """Call 3: synthesize base data and both independent analyses."""
+    recommendations = ["ADD", "HOLD", "REDUCE", "SELL"] if held else ["BUY", "WATCH", "AVOID"]
     schema = {
         "type": "object",
         "properties": {
@@ -135,7 +136,7 @@ def synthesize_analysis(
             "thesis": {"type": "string"},
             "invalidators": {"type": "array", "items": {"type": "string"}},
             "expected_events": {"type": "array", "items": {"type": "string"}},
-            "recommendation": {"type": "string", "enum": ["BUY", "WATCH", "HOLD", "ADD", "REDUCE", "SELL", "REJECT"]},
+            "recommendation": {"type": "string", "enum": recommendations},
             "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
             "primary_reason": {"type": "string"}, "strongest_counterargument": {"type": "string"},
             "base_data_identity": {"type": "string"},
@@ -147,11 +148,16 @@ def synthesize_analysis(
         ],
         "additionalProperties": False,
     }
-    payload = {"research_data": research_data, "call_1": call_1, "call_2": call_2}
+    payload = {
+        "research_data": research_data, "call_1": call_1, "call_2": call_2,
+        "holding_status": "held" if held else "not_held",
+    }
     prompt = (
         "Produce Call 3 synthesis. Keep Bull and Bear distinct; explicitly report contradictions and "
         "unresolved questions, then thesis, invalidators, expected events, recommendation, confidence, "
-        "primary reason, strongest counterargument, and base-data identity. Use only the supplied payload. "
+        "primary reason, strongest counterargument, and base-data identity. WATCH means investment interest "
+        "is positive but evidence or three-month risk/reward is insufficient to initiate. AVOID means "
+        "three-month risk/reward does not support initiating. Use only the supplied payload. "
         "Do not use outside knowledge, training-memory facts about the company, future information, or "
         "unstated current market information. Treat analysis_as_of and data_as_of as strict time boundaries. "
         "payload=" + json.dumps(payload, ensure_ascii=False)
