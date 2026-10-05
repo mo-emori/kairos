@@ -45,13 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_analysis(ticker: str, as_of: date | None) -> Path:
+def run_analysis(ticker: str, as_of: date | None, model: str | None = None) -> Path:
     if len(ticker) != 4 or not ticker.isdigit():
         raise ValueError("ticker must be a four-digit security code")
+    configured_model = model or str(load_json(CONFIG_PATH)["model"])
     research_data = fetch_research_data(ticker, as_of)
-    call_1 = positive_analysis(research_data)
-    call_2 = bear_risk_analysis(research_data)
-    synthesis = synthesize_analysis(research_data, call_1, call_2)
+    call_1 = positive_analysis(research_data, configured_model)
+    call_2 = bear_risk_analysis(research_data, configured_model)
+    synthesis = synthesize_analysis(research_data, call_1, call_2, configured_model)
     risk_result = evaluate_risk(
         synthesis["recommendation"], synthesis["confidence"], research_data, load_json(PORTFOLIO_PATH)
     )
@@ -61,10 +62,11 @@ def run_analysis(ticker: str, as_of: date | None) -> Path:
 
 def main() -> int:
     args = build_parser().parse_args()
-    configure_logging(load_json(CONFIG_PATH))
+    config = load_json(CONFIG_PATH)
+    configure_logging(config)
     if args.command == "analyze":
         try:
-            report_path = run_analysis(args.ticker, args.as_of)
+            report_path = run_analysis(args.ticker, args.as_of, str(config["model"]))
         except (OSError, ValueError, KeyError, TypeError) as exc:
             logging.getLogger("analyze").error("target=%s message=%s", args.ticker, exc)
             return 1
