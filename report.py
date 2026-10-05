@@ -8,6 +8,10 @@ def _bullets(values: list[str]) -> str:
     return "\n".join(f"- {value}" for value in values)
 
 
+def _price(value: Any) -> str:
+    return "Unavailable" if value is None else f"{value:,.2f}"
+
+
 def render_report(
     research_data: dict[str, Any],
     call_1: dict[str, Any],
@@ -38,7 +42,7 @@ def render_report(
 - Ticker: {research_data['ticker']}
 - Company: {research_data['company_name']}
 - Source: {research_data['source']}
-- Price: {research_data['price']:,.2f}
+- Price: {_price(research_data['price'])}
 - Analysis as-of: {research_data['analysis_as_of']}
 - Data as-of: {research_data['data_as_of']}
 
