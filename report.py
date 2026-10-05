@@ -21,30 +21,36 @@ def render_report(
 ) -> str:
     """Render Human View first, followed by evidence from the full pipeline."""
     allocation = risk_result["suggested_allocation"]
-    allocation_text = "None" if allocation is None else f"{allocation:.1%}"
+    allocation_text = "None (not applicable)" if allocation is None else f"{allocation:.1%}"
     amount = risk_result.get("suggested_amount")
-    amount_text = "None" if amount is None else f"{amount:,.0f}"
+    amount_text = "None (not applicable)" if amount is None else f"{amount:,.0f}"
     return f"""# KAIROS Investment Report — {research_data['ticker']}
 
 ## Human View
 
 - **Recommendation:** {synthesis['recommendation']}
 - **Primary reason:** {synthesis['primary_reason']}
-- **Strongest counterargument:** {synthesis['strongest_counterargument']}
+- **Strongest opposing reason:** {call_2['bear_case']}
 - **Confidence:** {synthesis['confidence'].upper()}
 - **Suggested allocation:** {allocation_text} (amount: {amount_text})
-- **Risk check:** {risk_result['status']} — {risk_result['reason']}
+- **Risk Check:** {risk_result['status']} — {risk_result['reason']}
 - **Analysis as-of:** {research_data['analysis_as_of']}
 - **Data as-of:** {research_data['data_as_of']}
 
-## Identity and Data
+## Identity
 
 - Ticker: {research_data['ticker']}
 - Company: {research_data['company_name']}
 - Source: {research_data['source']}
 - Price: {_price(research_data['price'])}
-- Analysis as-of: {research_data['analysis_as_of']}
-- Data as-of: {research_data['data_as_of']}
+
+## Analysis as-of
+
+{research_data['analysis_as_of']}
+
+## Data as-of
+
+{research_data['data_as_of']}
 
 ## Call 1 — Positive Analysis
 
@@ -98,15 +104,23 @@ Evidence:
 
 {_bullets(synthesis['expected_events'])}
 
-- Recommendation: {synthesis['recommendation']}
-- Confidence: {synthesis['confidence']}
+### Recommendation
 
-## Allocation and Risk Check
+{synthesis['recommendation']}
+
+### Confidence
+
+{synthesis['confidence'].upper()}
+
+## Allocation
 
 - Suggested allocation: {allocation_text}
 - Suggested amount: {amount_text}
-- Risk status: {risk_result['status']}
-- Risk reason: {risk_result['reason']}
+
+## Risk Check
+
+- Status: {risk_result['status']}
+- Reason: {risk_result['reason']}
 
 This report is decision support only. The human makes the final investment and broker decision.
 """
