@@ -83,6 +83,122 @@ def _number(value: Any) -> float | int | None:
     return int(number) if number.is_integer() else number
 
 
+def _metric(current: float | int | None, prior: float | int | None) -> dict[str, Any]:
+    change = current - prior if current is not None and prior is not None else None
+    change_pct = change / prior if change is not None and prior is not None and prior > 0 else None
+    return {"current": current, "prior_comparable": prior, "change": change, "change_pct": change_pct}
+
+
+def _margin(record: dict[str, Any] | None, numerator: str) -> float | None:
+    if not record:
+        return None
+    sales, value = _number(record.get("Sales")), _number(record.get(numerator))
+    return value / sales if value is not None and sales not in (None, 0) else None
+
+
+def _prior_comparable(current: dict[str, Any], records: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Match only the identical period type in the immediately prior fiscal year."""
+    try:
+        prior_year_end = date.fromisoformat(current["CurFYEn"]).replace(
+            year=date.fromisoformat(current["CurFYEn"]).year - 1
+        ).isoformat()
+    except (KeyError, TypeError, ValueError):
+        return None
+    matches = [
+        record for record in records
+        if record.get("CurPerType") == current.get("CurPerType")
+        and record.get("CurFYEn") == prior_year_end
+    ]
+    return max(matches, key=lambda r: (r.get("DiscDate") or "", r.get("DiscTime") or "", r.get("DiscNo") or ""), default=None)
+
+
+def _historical(current: dict[str, Any], prior: dict[str, Any] | None) -> dict[str, Any]:
+    fields = {"revenue": "Sales", "operating_profit": "OP", "net_income": "NP", "eps": "EPS",
+              "equity_ratio": "EqAR"}
+    result = {name: _metric(_number(current.get(field)), _number(prior.get(field)) if prior else None)
+              for name, field in fields.items()}
+    result["operating_margin"] = _metric(_margin(current, "OP"), _margin(prior, "OP"))
+    result["net_margin"] = _metric(_margin(current, "NP"), _margin(prior, "NP"))
+    return {
+        "period_type": current.get("CurPerType") or None,
+        "period_start": current.get("CurPerSt") or None,
+        "period_end": current.get("CurPerEn") or None,
+        "prior_period_start": prior.get("CurPerSt") if prior else None,
+        "prior_period_end": prior.get("CurPerEn") if prior else None,
+        "metrics": result,
+    }
+
+
+def _cash_flow(current: dict[str, Any]) -> dict[str, Any]:
+    net_income, operating = _number(current.get("NP")), _number(current.get("CFO"))
+    compatible = bool(current.get("CurPerSt") and current.get("CurPerEn"))
+    return {
+        "period_start": current.get("CurPerSt") or None, "period_end": current.get("CurPerEn") or None,
+        "operating_cash_flow": operating, "investing_cash_flow": _number(current.get("CFI")),
+        "financing_cash_flow": _number(current.get("CFF")),
+        "cash_and_cash_equivalents": _number(current.get("CashEq")),
+        "net_income": net_income if compatible else None,
+        "operating_cash_flow_minus_net_income": operating - net_income
+        if compatible and operating is not None and net_income is not None else None,
+    }
+
+
+def _forecast(current: dict[str, Any], price: float | int | None) -> dict[str, Any] | None:
+    if current.get("CurPerType") == "FY" and current.get("NxtFYSt") and current.get("NxtFYEn"):
+        prefix, np_field, period_start, period_end, dividend = (
+            "NxF", "NxFNp", current["NxtFYSt"], current["NxtFYEn"], "NxFDivAnn"
+        )
+    elif current.get("CurFYSt") and current.get("CurFYEn"):
+        prefix, np_field, period_start, period_end, dividend = (
+            "F", "FNP", current["CurFYSt"], current["CurFYEn"], "FDivAnn"
+        )
+    else:
+        return None
+    eps = _number(current.get(prefix + "EPS"))
+    values = {
+        "revenue": _number(current.get(prefix + "Sales")),
+        "operating_profit": _number(current.get(prefix + "OP")),
+        "net_income": _number(current.get(np_field)), "eps": eps,
+        "dividend_per_share": _number(current.get(dividend)),
+    }
+    if not any(value is not None for value in values.values()):
+        return None
+    return {
+        "period_start": period_start, "period_end": period_end,
+        "disclosure_date": current.get("DiscDate") or None, **values,
+        "forward_per": price / eps if price is not None and eps is not None and eps > 0 else None,
+    }
+
+
+def _latest_relevant_forecast(
+    current: dict[str, Any], records: list[dict[str, Any]], price: float | int | None,
+) -> dict[str, Any] | None:
+    """Select the latest disclosed forecast for the fiscal year relevant to the latest actual."""
+    if current.get("CurPerType") == "FY":
+        candidates = [record for record in records if record.get("NxtFYEn") == current.get("NxtFYEn")]
+    else:
+        candidates = [record for record in records if record.get("CurFYEn") == current.get("CurFYEn")]
+    for record in reversed(candidates):
+        forecast = _forecast(record, price)
+        if forecast is not None:
+            return forecast
+    return None
+
+
+def _price_trend(prices: list[dict[str, Any]]) -> dict[str, Any]:
+    observations = [(record["Date"], _number(record.get("AdjC"))) for record in prices]
+    observations = [(day, value) for day, value in observations if value is not None]
+    current = observations[-1][1] if observations else None
+    returns: dict[str, float | None] = {}
+    for lookback, label in ((21, "21_observations"), (63, "63_observations"),
+                            (126, "126_observations"), (252, "252_observations")):
+        # N observations back means index -1-N, requiring N+1 adjusted-close observations.
+        prior = observations[-1 - lookback][1] if len(observations) > lookback else None
+        returns[label] = current / prior - 1 if current is not None and prior not in (None, 0) else None
+    return {"price_date": observations[-1][0] if observations else None,
+            "adjusted_close": current, "returns": returns}
+
+
 def _archive(data_root: Path, ticker: str, run_label: str, name: str, payload: dict[str, Any]) -> Path:
     directory = data_root / "raw" / "jquants" / ticker / run_label
     directory.mkdir(parents=True, exist_ok=True)
@@ -108,15 +224,31 @@ def fetch_research_data(ticker: str, as_of: date | None = None) -> dict[str, Any
     financials = [r for r in _records(financials_raw) if r.get("DiscDate") and (cutoff is None or r["DiscDate"] <= cutoff)]
     prices.sort(key=lambda r: r["Date"])
     financials.sort(key=lambda r: (r["DiscDate"], r.get("DiscTime") or "", r.get("DiscNo") or ""))
-    price_record = next((r for r in reversed(prices) if _number(r.get("AdjC", r.get("C"))) is not None), None)
+    price_record = next((r for r in reversed(prices) if _number(r.get("AdjC")) is not None), None)
     financial_record = next((r for r in reversed(financials) if any(_number(r.get(k)) is not None for k in ("Sales", "OP", "NP", "EPS", "EqAR"))), None)
     used_dates = [r[field] for r, field in ((price_record, "Date"), (financial_record, "DiscDate")) if r]
     if not used_dates:
         raise ValueError(f"J-Quants Data Error: no usable records for {ticker} at the requested as-of")
     analysis_date = cutoff or max(used_dates)
-    price = _number(price_record.get("AdjC", price_record.get("C"))) if price_record else None
+    price = _number(price_record.get("AdjC")) if price_record else None
     eps = _number(financial_record.get("EPS")) if financial_record else None
     per = price / eps if price is not None and eps not in (None, 0) else None
+    prior = _prior_comparable(financial_record, financials) if financial_record else None
+    latest_fy = next((r for r in reversed(financials) if r.get("CurPerType") == "FY" and _number(r.get("ROE")) is not None), None)
+    company = {
+        "snapshot": {"price": price,
+                     "revenue": _number(financial_record.get("Sales")) if financial_record else None,
+                     "operating_profit": _number(financial_record.get("OP")) if financial_record else None,
+                     "net_income": _number(financial_record.get("NP")) if financial_record else None,
+                     "equity_ratio": _number(financial_record.get("EqAR")) if financial_record else None,
+                     "per": per},
+        "historical_comparable": _historical(financial_record, prior) if financial_record else None,
+        "roe": {"value": _number(latest_fy.get("ROE")), "period_end": latest_fy.get("CurPerEn")}
+        if latest_fy else None,
+        "cash_flow": _cash_flow(financial_record) if financial_record else None,
+        "forecast": _latest_relevant_forecast(financial_record, financials, price) if financial_record else None,
+        "price_trend": _price_trend(prices),
+    }
     return {
         "source": "J-Quants API V2", "ticker": ticker,
         "company_name": "Unavailable (listed-company master not requested)", "analysis_as_of": analysis_date,
@@ -127,5 +259,5 @@ def fetch_research_data(ticker: str, as_of: date | None = None) -> dict[str, Any
         "equity_ratio": _number(financial_record.get("EqAR")) if financial_record else None,
         "per": per, "price_date": price_record.get("Date") if price_record else None,
         "financial_disclosure_date": financial_record.get("DiscDate") if financial_record else None,
-        "raw_paths": [str(price_raw_path), str(financial_raw_path)],
+        "company": company, "raw_paths": [str(price_raw_path), str(financial_raw_path)],
     }

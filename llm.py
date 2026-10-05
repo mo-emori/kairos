@@ -76,7 +76,8 @@ def positive_analysis(research_data: dict[str, Any], model: str) -> dict[str, An
         "Produce Call 1: concise Fundamental, Valuation, and Bull analysis with concise evidence. "
         "Use only the supplied J-Quants research_data. Do not use outside knowledge, training-memory "
         "facts about the company, future information, or unstated current market information. "
-        "Treat analysis_as_of and data_as_of as strict time boundaries. research_data="
+        "Treat analysis_as_of and data_as_of as strict time boundaries. null means unavailable and must "
+        "never be treated as zero. research_data="
         + json.dumps(research_data, ensure_ascii=False)
     )
     try:
@@ -108,7 +109,8 @@ def bear_risk_analysis(research_data: dict[str, Any], model: str) -> dict[str, A
         "Use only the supplied J-Quants research_data; no Call 1 output, thesis, recommendation, or "
         "conclusions are available. Do not use outside knowledge, training-memory facts about the company, "
         "future information, or unstated current market information. Treat analysis_as_of and data_as_of "
-        "as strict time boundaries. research_data=" + json.dumps(research_data, ensure_ascii=False)
+        "as strict time boundaries. null means unavailable and must never be treated as zero. research_data="
+        + json.dumps(research_data, ensure_ascii=False)
     )
     try:
         response = _client().responses.create(
@@ -160,6 +162,7 @@ def synthesize_analysis(
         "three-month risk/reward does not support initiating. Use only the supplied payload. "
         "Do not use outside knowledge, training-memory facts about the company, future information, or "
         "unstated current market information. Treat analysis_as_of and data_as_of as strict time boundaries. "
+        "null means unavailable and must never be treated as zero. "
         "payload=" + json.dumps(payload, ensure_ascii=False)
     )
     try:

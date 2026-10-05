@@ -40,7 +40,7 @@ class JQuantsParsingTest(unittest.TestCase):
 
     def test_data_as_of_ignores_newer_unusable_records(self):
         prices = {"endpoint": data.PRICE_PATH, "pages": [{"data": [
-            {"Date": "2025-06-29", "C": "2500"}, {"Date": "2025-06-30", "C": ""},
+            {"Date": "2025-06-29", "AdjC": "2500"}, {"Date": "2025-06-30", "AdjC": ""},
         ]}]}
         financials = {"endpoint": data.FINANCIAL_PATH, "pages": [{"data": [
             {"DiscDate": "2025-06-28", "Sales": "1000", "OP": "100", "NP": "70",
@@ -56,6 +56,59 @@ class JQuantsParsingTest(unittest.TestCase):
         self.assertEqual(result["price_date"], "2025-06-29")
         self.assertEqual(result["financial_disclosure_date"], "2025-06-28")
         self.assertEqual(result["data_as_of"], "2025-06-29")
+
+    def test_same_period_prior_year_matching_rejects_previous_mismatched_period(self):
+        current = {"CurPerType": "2Q", "CurFYEn": "2026-03-31"}
+        records = [
+            {"CurPerType": "1Q", "CurFYEn": "2026-03-31", "DiscDate": "2025-08-01"},
+            {"CurPerType": "2Q", "CurFYEn": "2025-03-31", "DiscDate": "2024-11-01", "Sales": "80"},
+            {"CurPerType": "1Q", "CurFYEn": "2025-03-31", "DiscDate": "2024-08-01", "Sales": "70"},
+        ]
+        self.assertEqual(data._prior_comparable(current, records)["Sales"], "80")
+
+    def test_change_pct_is_null_for_nonpositive_prior_and_empty_is_none(self):
+        self.assertIsNone(data._metric(10, 0)["change_pct"])
+        self.assertIsNone(data._metric(10, -2)["change_pct"])
+        self.assertIsNone(data._number(""))
+
+    def test_cash_flow_comparison_requires_period_coverage(self):
+        compatible = data._cash_flow({"CurPerSt": "2025-04-01", "CurPerEn": "2025-09-30",
+                                      "CFO": "120", "NP": "100"})
+        incompatible = data._cash_flow({"CFO": "120", "NP": "100"})
+        self.assertEqual(compatible["operating_cash_flow_minus_net_income"], 20)
+        self.assertIsNone(incompatible["operating_cash_flow_minus_net_income"])
+
+    def test_forecast_uses_current_fy_for_interim_and_next_fy_for_fy(self):
+        interim = data._forecast({"CurPerType": "2Q", "CurFYSt": "2025-04-01", "CurFYEn": "2026-03-31",
+                                  "FSales": "100", "FEPS": "5", "NxFSales": "999"}, 50)
+        full_year = data._forecast({"CurPerType": "FY", "CurFYSt": "2024-04-01", "CurFYEn": "2025-03-31",
+                                   "NxtFYSt": "2025-04-01", "NxtFYEn": "2026-03-31",
+                                   "FSales": "100", "NxFSales": "200", "NxFEPS": "10"}, 50)
+        self.assertEqual((interim["revenue"], interim["period_end"]), (100, "2026-03-31"))
+        self.assertEqual((full_year["revenue"], full_year["forward_per"]), (200, 5))
+        later_without_forecast = {"CurPerType": "2Q", "CurFYSt": "2025-04-01",
+                                  "CurFYEn": "2026-03-31", "DiscDate": "2025-11-01"}
+        selected = data._latest_relevant_forecast(later_without_forecast, [
+            {"CurPerType": "1Q", "CurFYSt": "2025-04-01", "CurFYEn": "2026-03-31",
+             "DiscDate": "2025-08-01", "FSales": "150"}, later_without_forecast,
+        ], 50)
+        self.assertEqual(selected["revenue"], 150)
+
+    def test_price_returns_use_adjusted_close_cutoff_windows_and_insufficient_null(self):
+        records = [{"Date": f"2025-01-{index:03d}", "AdjC": index + 1, "C": 99999}
+                   for index in range(253)]
+        trend = data._price_trend(records)
+        self.assertAlmostEqual(trend["returns"]["21_observations"], 253 / 232 - 1)
+        self.assertAlmostEqual(trend["returns"]["63_observations"], 253 / 190 - 1)
+        self.assertAlmostEqual(trend["returns"]["126_observations"], 253 / 127 - 1)
+        self.assertAlmostEqual(trend["returns"]["252_observations"], 252)
+        self.assertIsNone(data._price_trend(records[:21])["returns"]["21_observations"])
+
+    def test_required_fields_remain_v01(self):
+        self.assertEqual(data.REQUIRED_FIELDS, (
+            "ticker", "analysis_as_of", "data_as_of", "price", "revenue",
+            "operating_profit", "net_income", "equity_ratio", "per",
+        ))
 
 
 if __name__ == "__main__":

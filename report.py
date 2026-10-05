@@ -12,6 +12,49 @@ def _price(value: Any) -> str:
     return "Unavailable" if value is None else f"{value:,.2f}"
 
 
+def _value(value: Any) -> str:
+    return "Unavailable" if value is None else f"{value:,.2f}"
+
+
+def _percent(value: Any) -> str:
+    return "Unavailable" if value is None else f"{value:.2%}"
+
+
+def _company_context(company: dict[str, Any] | None) -> str:
+    if not company:
+        return "Unavailable"
+    historical = company.get("historical_comparable") or {}
+    metrics = historical.get("metrics") or {}
+    rows = ["| Metric | Current | Prior comparable | Change | Change % |",
+            "|---|---:|---:|---:|---:|"]
+    for name, values in metrics.items():
+        display = _percent if name in {"operating_margin", "net_margin", "equity_ratio"} else _value
+        rows.append(f"| {name} | {display(values.get('current'))} | {display(values.get('prior_comparable'))} | "
+                    f"{display(values.get('change'))} | {_percent(values.get('change_pct'))} |")
+    cash, forecast, trend = company.get("cash_flow") or {}, company.get("forecast") or {}, company.get("price_trend") or {}
+    returns = trend.get("returns") or {}
+    return "\n".join([
+        f"Period: {historical.get('period_type') or 'Unavailable'} "
+        f"({historical.get('period_start') or 'Unavailable'} to {historical.get('period_end') or 'Unavailable'}); "
+        f"prior {historical.get('prior_period_start') or 'Unavailable'} to {historical.get('prior_period_end') or 'Unavailable'}",
+        "", *rows, "", "### Cash Flow",
+        f"- Operating CF: {_value(cash.get('operating_cash_flow'))}",
+        f"- Investing CF: {_value(cash.get('investing_cash_flow'))}",
+        f"- Financing CF: {_value(cash.get('financing_cash_flow'))}",
+        f"- Cash and cash equivalents: {_value(cash.get('cash_and_cash_equivalents'))}",
+        f"- Operating CF minus period-compatible net income: {_value(cash.get('operating_cash_flow_minus_net_income'))}",
+        "", "### Company Forecast",
+        f"- Period: {forecast.get('period_start') or 'Unavailable'} to {forecast.get('period_end') or 'Unavailable'}",
+        f"- Revenue / OP / NP: {_value(forecast.get('revenue'))} / {_value(forecast.get('operating_profit'))} / {_value(forecast.get('net_income'))}",
+        f"- EPS / dividend / forward PER: {_value(forecast.get('eps'))} / {_value(forecast.get('dividend_per_share'))} / {_value(forecast.get('forward_per'))}",
+        "", "### Price Trend (Adjusted Close)",
+        f"- As-of adjusted close: {_value(trend.get('adjusted_close'))} ({trend.get('price_date') or 'Unavailable'})",
+        f"- 21 / 63 / 126 / 252 observation returns: {_percent(returns.get('21_observations'))} / "
+        f"{_percent(returns.get('63_observations'))} / {_percent(returns.get('126_observations'))} / {_percent(returns.get('252_observations'))}",
+        f"- Latest full-year ROE: {_percent((company.get('roe') or {}).get('value'))}",
+    ])
+
+
 def render_report(
     research_data: dict[str, Any],
     call_1: dict[str, Any],
@@ -54,6 +97,10 @@ def render_report(
 ## Data as-of
 
 {research_data['data_as_of']}
+
+## Company Context
+
+{_company_context(research_data.get('company'))}
 
 ## Call 1 — Positive Analysis
 

@@ -15,6 +15,12 @@ class VerticalSliceTest(unittest.TestCase):
             "analysis_as_of": "2026-10-05", "data_as_of": "2026-10-02",
             "price": 3000, "revenue": 100000, "operating_profit": 10000,
             "net_income": 7000, "equity_ratio": 40, "per": 12,
+            "company": {"historical_comparable": {"period_type": "FY", "period_start": "2025-04-01",
+                "period_end": "2026-03-31", "prior_period_start": None, "prior_period_end": None,
+                "metrics": {"revenue": {"current": 100000, "prior_comparable": None,
+                "change": None, "change_pct": None}}}, "cash_flow": None, "forecast": None,
+                "price_trend": {"price_date": "2026-10-02", "adjusted_close": 3000, "returns": {}},
+                "roe": None},
         }
         call_1 = {"fundamental": "収益は安定", "valuation": "適正", "bull_case": "成長余地", "evidence": ["売上"]}
         call_2 = {"bear_case": "為替リスク", "risks": ["需要減"], "evidence": ["開示情報"]}
@@ -68,12 +74,14 @@ class VerticalSliceTest(unittest.TestCase):
         self.assertEqual(seen["synthesis"], (expected_context, call_1, call_2, False, "local-model"))
         for heading in ("## Human View", "### Fundamental", "### Valuation", "### Bull",
                         "### Bear", "### Risk", "### Contradictions", "### Thesis",
-                        "## Allocation", "## Risk Check"):
+                        "## Company Context", "### Cash Flow", "### Company Forecast",
+                        "### Price Trend (Adjusted Close)", "## Allocation", "## Risk Check"):
             self.assertIn(heading, markdown)
         self.assertIn("トヨタ自動車", markdown)
         self.assertIn("Suggested allocation:** 5.0%", markdown)
         self.assertIn("Investment horizon:** 3 months", markdown)
         self.assertIn("Holding state:** Not held", markdown)
+        self.assertIn("Unavailable", markdown)
 
 
 if __name__ == "__main__":

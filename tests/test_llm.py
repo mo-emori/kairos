@@ -20,7 +20,8 @@ class LlmContextAndSchemaTest(unittest.TestCase):
                 return SimpleNamespace(status="completed", output=[], output_text=json.dumps(output), usage=None)
 
         context = {"ticker": "7203", "analysis_as_of": "2026-10-05",
-                   "data_as_of": "2026-10-02", "investment_horizon": "3 months"}
+                   "data_as_of": "2026-10-02", "investment_horizon": "3 months",
+                   "company": {"forecast": {"eps": None}}}
         with patch.object(llm, "_client", return_value=SimpleNamespace(responses=Responses())):
             call_1 = llm.positive_analysis(context, "model")
             llm.bear_risk_analysis(context, "model")
@@ -29,6 +30,8 @@ class LlmContextAndSchemaTest(unittest.TestCase):
             self.assertNotIn("holding_status", prompt)
             self.assertNotIn("portfolio", prompt)
         self.assertNotIn(json.dumps(call_1), inputs[1])
+        self.assertIn("null means unavailable", inputs[0])
+        self.assertIn("null means unavailable", inputs[1])
 
     def _capture_synthesis(self, held):
         captured = {}
