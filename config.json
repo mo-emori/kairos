@@ -1,4 +1,6 @@
 {
   "log_level": "INFO",
-  "model": "gpt-5.6-sol"
+  "model": "gpt-5.6-sol",
+  "max_position_ratio": 0.1,
+  "min_cash_ratio": 0.2
 }

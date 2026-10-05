@@ -1,5 +1,10 @@
 {
   "cash": 1000000,
-  "holdings": []
+  "cash_ratio": 1.0,
+  "holdings": [
+    {
+      "ticker": "0000",
+      "position_ratio": 0.0
+    }
+  ]
 }
-

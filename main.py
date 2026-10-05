@@ -48,13 +48,15 @@ def build_parser() -> argparse.ArgumentParser:
 def run_analysis(ticker: str, as_of: date | None, model: str | None = None) -> Path:
     if len(ticker) != 4 or not ticker.isdigit():
         raise ValueError("ticker must be a four-digit security code")
-    configured_model = model or str(load_json(CONFIG_PATH)["model"])
+    config = load_json(CONFIG_PATH)
+    configured_model = model or str(config["model"])
     research_data = fetch_research_data(ticker, as_of)
     call_1 = positive_analysis(research_data, configured_model)
     call_2 = bear_risk_analysis(research_data, configured_model)
     synthesis = synthesize_analysis(research_data, call_1, call_2, configured_model)
     risk_result = evaluate_risk(
-        synthesis["recommendation"], synthesis["confidence"], research_data, load_json(PORTFOLIO_PATH)
+        synthesis["recommendation"], synthesis["confidence"], research_data, load_json(PORTFOLIO_PATH),
+        float(config["max_position_ratio"]), float(config["min_cash_ratio"]),
     )
     markdown = render_report(research_data, call_1, call_2, synthesis, risk_result)
     return save_report(markdown, ticker, research_data["analysis_as_of"], REPORTS_DIR)

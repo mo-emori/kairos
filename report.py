@@ -32,7 +32,7 @@ def render_report(
 - **Primary reason:** {synthesis['primary_reason']}
 - **Strongest counterargument:** {synthesis['strongest_counterargument']}
 - **Confidence:** {synthesis['confidence'].upper()}
-- **Suggested allocation:** {allocation_text} (stub amount: {amount_text})
+- **Suggested allocation:** {allocation_text} (amount: {amount_text})
 - **Risk check:** {risk_result['status']} — {risk_result['reason']}
 - **Analysis as-of:** {research_data['analysis_as_of']}
 - **Data as-of:** {research_data['data_as_of']}
@@ -104,7 +104,7 @@ Evidence:
 ## Allocation and Risk Check
 
 - Suggested allocation: {allocation_text}
-- Suggested amount from stub cash: {amount_text}
+- Suggested amount: {amount_text}
 - Risk status: {risk_result['status']}
 - Risk reason: {risk_result['reason']}
 
