@@ -1,6 +1,8 @@
-"""Minimal RSS 2.0 parsing and raw news JSONL storage."""
+"""Minimal RSS storage and deterministic controlled-taxonomy matching."""
 
 import json
+import re
+import unicodedata
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -10,6 +12,125 @@ from xml.etree import ElementTree
 RECORD_FIELDS: tuple[str, ...] = (
     "source", "published_at", "retrieved_at", "title", "summary", "url",
 )
+DEFAULT_TAXONOMY_PATH = Path(__file__).with_name("data") / "news_taxonomy.json"
+
+
+def _non_empty_string(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+    return value
+
+
+def _keyword_dictionary(value: Any, name: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{name} must be an object")
+    for category_id, category in value.items():
+        _non_empty_string(category_id, f"{name} ID")
+        if not isinstance(category, dict) or set(category) != {"keywords"}:
+            raise ValueError(f"{name}.{category_id} must contain only keywords")
+        keywords = category["keywords"]
+        if not isinstance(keywords, list) or not keywords:
+            raise ValueError(f"{name}.{category_id}.keywords must be a non-empty list")
+        for keyword in keywords:
+            _non_empty_string(keyword, f"{name}.{category_id} keyword")
+
+
+def validate_taxonomy(config: Any) -> dict[str, Any]:
+    """Validate and return a Human-maintained news taxonomy object."""
+    required = {"version", "sectors", "themes", "tickers"}
+    if not isinstance(config, dict) or set(config) != required:
+        raise ValueError("news taxonomy must contain version, sectors, themes, and tickers")
+    if config["version"] != 1:
+        raise ValueError("unsupported news taxonomy version")
+    sectors = config["sectors"]
+    if not isinstance(sectors, dict) or set(sectors) != {"sector_l1", "sector_l2"}:
+        raise ValueError("sectors must contain sector_l1 and sector_l2")
+    _keyword_dictionary(sectors["sector_l1"], "sector_l1")
+    _keyword_dictionary(sectors["sector_l2"], "sector_l2")
+    _keyword_dictionary(config["themes"], "themes")
+    if not isinstance(config["tickers"], dict):
+        raise ValueError("tickers must be an object")
+    ticker_fields = {"company_aliases", "official_industry", "sector_l1", "sector_l2", "themes"}
+    for ticker, mapping in config["tickers"].items():
+        _non_empty_string(ticker, "ticker")
+        if not isinstance(mapping, dict) or set(mapping) != ticker_fields:
+            raise ValueError(f"ticker {ticker} must contain exactly {sorted(ticker_fields)}")
+        aliases = mapping["company_aliases"]
+        if not isinstance(aliases, list) or not aliases:
+            raise ValueError(f"ticker {ticker} company_aliases must be a non-empty list")
+        for alias in aliases:
+            _non_empty_string(alias, f"ticker {ticker} company alias")
+        _non_empty_string(mapping["official_industry"], f"ticker {ticker} official_industry")
+        for layer in ("sector_l1", "sector_l2"):
+            category_id = _non_empty_string(mapping[layer], f"ticker {ticker} {layer}")
+            if category_id not in sectors[layer]:
+                raise ValueError(f"ticker {ticker} references undefined {layer} {category_id}")
+        themes = mapping["themes"]
+        if not isinstance(themes, list):
+            raise ValueError(f"ticker {ticker} themes must be a list")
+        for theme_id in themes:
+            _non_empty_string(theme_id, f"ticker {ticker} theme")
+            if theme_id not in config["themes"]:
+                raise ValueError(f"ticker {ticker} references undefined theme {theme_id}")
+    return config
+
+
+def load_taxonomy(path: str | Path = DEFAULT_TAXONOMY_PATH) -> dict[str, Any]:
+    """Load and validate the Human-editable news taxonomy JSON file."""
+    try:
+        with Path(path).open(encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot load news taxonomy: {path}") from exc
+    return validate_taxonomy(config)
+
+
+def _matching_keywords(text: str, keywords: list[str]) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    matches: list[str] = []
+    for keyword in keywords:
+        needle = unicodedata.normalize("NFKC", keyword).casefold()
+        if needle.isascii() and any(character.isalnum() for character in needle):
+            pattern = rf"(?<![a-z0-9]){re.escape(needle)}(?![a-z0-9])"
+            matched = re.search(pattern, normalized) is not None
+        else:
+            matched = needle in normalized
+        if matched:
+            matches.append(keyword)
+    return matches
+
+
+def match_news(
+    record: dict[str, Any], ticker: str, taxonomy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return deterministic keyword matches for one record and covered ticker."""
+    config = validate_taxonomy(taxonomy) if taxonomy is not None else load_taxonomy()
+    ticker = str(ticker)
+    if ticker not in config["tickers"]:
+        raise ValueError(f"unknown news taxonomy ticker: {ticker}")
+    title = record.get("title")
+    summary = record.get("summary")
+    if not isinstance(title, str) or not isinstance(summary, str):
+        raise ValueError("news record title and summary must be strings")
+    text = f"{title}\n{summary}"
+    mapping = config["tickers"][ticker]
+    result: dict[str, Any] = {}
+    company = _matching_keywords(text, mapping["company_aliases"])
+    if company:
+        result["company"] = {"keywords": company}
+    for layer in ("sector_l1", "sector_l2"):
+        category_id = mapping[layer]
+        matched = _matching_keywords(text, config["sectors"][layer][category_id]["keywords"])
+        if matched:
+            result[layer] = {"id": category_id, "keywords": matched}
+    theme_matches = []
+    for theme_id in mapping["themes"]:
+        matched = _matching_keywords(text, config["themes"][theme_id]["keywords"])
+        if matched:
+            theme_matches.append({"id": theme_id, "keywords": matched})
+    if theme_matches:
+        result["themes"] = theme_matches
+    return result
 
 
 def _utc_iso(value: datetime, name: str) -> str:

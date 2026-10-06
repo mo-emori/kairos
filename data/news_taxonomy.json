@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "sectors": {
+    "sector_l1": {
+      "automobile": {
+        "keywords": ["自動車", "automobile", "automotive"]
+      },
+      "technology": {
+        "keywords": ["テクノロジー", "technology"]
+      },
+      "semiconductor": {
+        "keywords": ["半導体", "semiconductor"]
+      }
+    },
+    "sector_l2": {
+      "finished_vehicle": {
+        "keywords": ["完成車", "vehicle production"]
+      },
+      "technology_investment": {
+        "keywords": ["テクノロジー投資", "technology investment"]
+      },
+      "semiconductor_equipment": {
+        "keywords": ["半導体製造装置", "semiconductor equipment"]
+      }
+    }
+  },
+  "themes": {
+    "ai": {
+      "keywords": ["AI", "人工知能"]
+    },
+    "ev": {
+      "keywords": ["EV", "電気自動車"]
+    },
+    "semiconductor_test": {
+      "keywords": ["半導体テスト", "semiconductor test"]
+    }
+  },
+  "tickers": {
+    "7203": {
+      "company_aliases": ["トヨタ", "トヨタ自動車", "Toyota", "Toyota Motor"],
+      "official_industry": "輸送用機器",
+      "sector_l1": "automobile",
+      "sector_l2": "finished_vehicle",
+      "themes": ["ev"]
+    },
+    "9984": {
+      "company_aliases": ["ソフトバンクグループ", "SoftBank Group"],
+      "official_industry": "情報・通信業",
+      "sector_l1": "technology",
+      "sector_l2": "technology_investment",
+      "themes": ["ai"]
+    },
+    "6857": {
+      "company_aliases": ["アドバンテスト", "Advantest"],
+      "official_industry": "電気機器",
+      "sector_l1": "semiconductor",
+      "sector_l2": "semiconductor_equipment",
+      "themes": ["ai", "semiconductor_test"]
+    }
+  }
+}

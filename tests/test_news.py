@@ -95,6 +95,66 @@ class NewsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "timezone-aware"):
             news.parse_rss(RSS, "Fixture", datetime(2026, 10, 7))
 
+    def test_default_taxonomy_loads_and_has_only_controlled_ticker_fields(self):
+        config = news.load_taxonomy()
+        self.assertEqual(set(config["tickers"]), {"7203", "9984", "6857"})
+        self.assertEqual(set(config["tickers"]["7203"]), {
+            "company_aliases", "official_industry", "sector_l1", "sector_l2", "themes",
+        })
+        self.assertNotIn("sector_l3", json.dumps(config))
+
+    def test_company_alias_is_latin_case_insensitive_and_japanese_literal(self):
+        latin = news.match_news({"title": "TOYOTA plans update", "summary": ""}, "7203")
+        japanese = news.match_news({"title": "トヨタが発表", "summary": ""}, "7203")
+        self.assertEqual(latin["company"]["keywords"], ["Toyota"])
+        self.assertEqual(japanese["company"]["keywords"], ["トヨタ"])
+
+    def test_sector_l1_and_l2_keywords_match(self):
+        matches = news.match_news({
+            "title": "Semiconductor outlook", "summary": "SEMICONDUCTOR EQUIPMENT demand",
+        }, "6857")
+        self.assertEqual(matches["sector_l1"], {
+            "id": "semiconductor", "keywords": ["semiconductor"],
+        })
+        self.assertEqual(matches["sector_l2"], {
+            "id": "semiconductor_equipment", "keywords": ["semiconductor equipment"],
+        })
+
+    def test_one_record_can_match_company_sectors_and_multiple_themes(self):
+        record = {
+            "title": "Advantest advances AI semiconductor test systems",
+            "summary": "半導体製造装置の需要",
+            "url": "https://example.test/multi",
+        }
+        matches = news.match_news(record, "6857")
+        self.assertEqual(set(matches), {"company", "sector_l1", "sector_l2", "themes"})
+        self.assertEqual([item["id"] for item in matches["themes"]], [
+            "ai", "semiconductor_test",
+        ])
+        self.assertEqual(record["url"], "https://example.test/multi")
+
+    def test_unrelated_article_has_no_match_and_ai_uses_boundaries(self):
+        self.assertEqual(news.match_news({
+            "title": "Retail sales said to rise", "summary": "Consumer outlook",
+        }, "6857"), {})
+
+    def test_unknown_ticker_is_rejected_deterministically(self):
+        with self.assertRaisesRegex(ValueError, "unknown news taxonomy ticker: 0000"):
+            news.match_news({"title": "Anything", "summary": ""}, "0000")
+
+    def test_undefined_theme_reference_is_rejected(self):
+        config = news.load_taxonomy()
+        config["tickers"]["7203"]["themes"] = ["not_defined"]
+        with self.assertRaisesRegex(ValueError, "references undefined theme not_defined"):
+            news.validate_taxonomy(config)
+
+    def test_invalid_json_config_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "taxonomy.json"
+            path.write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "cannot load news taxonomy"):
+                news.load_taxonomy(path)
+
 
 if __name__ == "__main__":
     unittest.main()
