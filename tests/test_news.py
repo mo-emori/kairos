@@ -16,6 +16,10 @@ RSS = """<?xml version="1.0" encoding="UTF-8"?>
     <pubDate>Mon, 05 Oct 2026 23:00:00 GMT</pubDate></item>
 </channel></rss>"""
 
+TOYOTA = {"name_ja": "トヨタ自動車", "name_en": "TOYOTA MOTOR CORPORATION"}
+ADVANTEST = {"name_ja": "アドバンテスト", "name_en": "ADVANTEST CORPORATION"}
+SOFTBANK = {"name_ja": "ソフトバンクグループ", "name_en": "SoftBank Group Corp."}
+
 
 def parsed(retrieved_at=None):
     return news.parse_rss(
@@ -53,7 +57,9 @@ class NewsTest(unittest.TestCase):
         record = parsed()[0]
         with tempfile.TemporaryDirectory() as directory:
             written = news.store_news([record, dict(record)], directory)
-            lines = list((Path(directory) / "news" / "raw" / "2026-10-06.jsonl").open(encoding="utf-8"))
+            lines = (Path(directory) / "news" / "raw" / "2026-10-06.jsonl").read_text(
+                encoding="utf-8",
+            ).splitlines()
         self.assertEqual(len(written), 1)
         self.assertEqual(len(lines), 1)
 
@@ -99,20 +105,20 @@ class NewsTest(unittest.TestCase):
         config = news.load_taxonomy()
         self.assertEqual(set(config["tickers"]), {"7203", "9984", "6857"})
         self.assertEqual(set(config["tickers"]["7203"]), {
-            "company_aliases", "official_industry", "sector_l1", "sector_l2", "themes",
+            "additional_aliases", "sector_l1", "sector_l2", "themes",
         })
         self.assertNotIn("sector_l3", json.dumps(config))
 
     def test_company_alias_is_latin_case_insensitive_and_japanese_literal(self):
-        latin = news.match_news({"title": "TOYOTA plans update", "summary": ""}, "7203")
-        japanese = news.match_news({"title": "トヨタが発表", "summary": ""}, "7203")
+        latin = news.match_news({"title": "TOYOTA plans update", "summary": ""}, "7203", TOYOTA)
+        japanese = news.match_news({"title": "トヨタが発表", "summary": ""}, "7203", TOYOTA)
         self.assertEqual(latin["company"]["keywords"], ["Toyota"])
         self.assertEqual(japanese["company"]["keywords"], ["トヨタ"])
 
     def test_sector_l1_and_l2_keywords_match(self):
         matches = news.match_news({
             "title": "Semiconductor outlook", "summary": "SEMICONDUCTOR EQUIPMENT demand",
-        }, "6857")
+        }, "6857", ADVANTEST)
         self.assertEqual(matches["sector_l1"], {
             "id": "semiconductor", "keywords": ["semiconductor"],
         })
@@ -122,11 +128,11 @@ class NewsTest(unittest.TestCase):
 
     def test_one_record_can_match_company_sectors_and_multiple_themes(self):
         record = {
-            "title": "Advantest advances AI semiconductor test systems",
+            "title": "ADVANTEST CORPORATION advances AI semiconductor test systems",
             "summary": "半導体製造装置の需要",
             "url": "https://example.test/multi",
         }
-        matches = news.match_news(record, "6857")
+        matches = news.match_news(record, "6857", ADVANTEST)
         self.assertEqual(set(matches), {"company", "sector_l1", "sector_l2", "themes"})
         self.assertEqual([item["id"] for item in matches["themes"]], [
             "ai", "semiconductor_test",
@@ -136,11 +142,58 @@ class NewsTest(unittest.TestCase):
     def test_unrelated_article_has_no_match_and_ai_uses_boundaries(self):
         self.assertEqual(news.match_news({
             "title": "Retail sales said to rise", "summary": "Consumer outlook",
-        }, "6857"), {})
+        }, "6857", ADVANTEST), {})
 
-    def test_unknown_ticker_is_rejected_deterministically(self):
-        with self.assertRaisesRegex(ValueError, "unknown news taxonomy ticker: 0000"):
-            news.match_news({"title": "Anything", "summary": ""}, "0000")
+    def test_unregistered_ticker_uses_identity_without_sector_or_theme(self):
+        matches = news.match_news({
+            "title": "ACME HOLDINGS announces AI semiconductor investment", "summary": "",
+        }, "0000", {"name_ja": "アクメ", "name_en": "Acme Holdings"})
+        self.assertEqual(matches, {"company": {"keywords": ["Acme Holdings"]}})
+
+    def test_registered_ticker_combines_identity_and_additional_aliases(self):
+        automatic = news.match_news({"title": "TOYOTA MOTOR CORPORATION update", "summary": ""},
+                                    "7203", TOYOTA)
+        enriched = news.match_news({"title": "Toyota update", "summary": ""}, "7203", TOYOTA)
+        self.assertEqual(automatic["company"]["keywords"], ["TOYOTA MOTOR CORPORATION", "Toyota"])
+        self.assertEqual(enriched["company"]["keywords"], ["Toyota"])
+
+    def test_no_identity_and_no_enrichment_returns_no_company_match(self):
+        self.assertEqual(news.match_news({"title": "Anything", "summary": ""}, "0000", None), {})
+
+    def test_nullable_sector_and_l2_without_l1_validation(self):
+        config = news.load_taxonomy()
+        self.assertIsNone(config["tickers"]["9984"]["sector_l1"])
+        config["tickers"]["9984"]["sector_l2"] = "semiconductor_equipment"
+        with self.assertRaisesRegex(ValueError, "sector_l2 requires sector_l1"):
+            news.validate_taxonomy(config)
+
+    def test_seed_aliases_and_theme_mappings(self):
+        config = news.load_taxonomy()
+        self.assertEqual(config["tickers"]["9984"]["additional_aliases"], ["ソフトバンクG", "SBG"])
+        self.assertNotIn("ソフトバンク", config["tickers"]["9984"]["additional_aliases"])
+        for alias in ("SBG", "ソフトバンクG"):
+            self.assertIn("company", news.match_news({"title": alias, "summary": ""},
+                                                     "9984", SOFTBANK))
+        self.assertNotIn("company", news.match_news({"title": "ソフトバンクが発表", "summary": ""},
+                                                    "9984", SOFTBANK))
+        self.assertEqual(config["tickers"]["7203"]["themes"], ["hv", "ev"])
+        toyota = news.match_news({"title": "HVとEVの需要", "summary": ""}, "7203", TOYOTA)
+        self.assertEqual([item["id"] for item in toyota["themes"]], ["hv", "ev"])
+        self.assertEqual(config["tickers"]["6857"]["themes"],
+                         ["ai", "semiconductor_test", "hbm", "hpc"])
+        self.assertNotIn("semiconductor", config["tickers"]["6857"]["themes"])
+        advantest = news.match_news({
+            "title": "Semiconductor equipment for HBM and HPC", "summary": "",
+        }, "6857", ADVANTEST)
+        self.assertEqual(advantest["sector_l1"]["id"], "semiconductor")
+        self.assertEqual(advantest["sector_l2"]["id"], "semiconductor_equipment")
+        self.assertEqual([item["id"] for item in advantest["themes"]], ["hbm", "hpc"])
+
+    def test_latin_aliases_are_case_insensitive_and_boundary_safe(self):
+        self.assertIn("company", news.match_news({"title": "sbg strategy", "summary": ""},
+                                                 "9984", SOFTBANK))
+        self.assertNotIn("company", news.match_news({"title": "XSBG strategy", "summary": ""},
+                                                    "9984", SOFTBANK))
 
     def test_undefined_theme_reference_is_rejected(self):
         config = news.load_taxonomy()

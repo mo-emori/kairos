@@ -46,25 +46,42 @@ def validate_taxonomy(config: Any) -> dict[str, Any]:
     if not isinstance(sectors, dict) or set(sectors) != {"sector_l1", "sector_l2"}:
         raise ValueError("sectors must contain sector_l1 and sector_l2")
     _keyword_dictionary(sectors["sector_l1"], "sector_l1")
-    _keyword_dictionary(sectors["sector_l2"], "sector_l2")
+    if not isinstance(sectors["sector_l2"], dict):
+        raise ValueError("sector_l2 must be an object")
+    for category_id, category in sectors["sector_l2"].items():
+        _non_empty_string(category_id, "sector_l2 ID")
+        if not isinstance(category, dict) or set(category) != {"sector_l1", "keywords"}:
+            raise ValueError(f"sector_l2.{category_id} must contain sector_l1 and keywords")
+        parent = _non_empty_string(category["sector_l1"], f"sector_l2.{category_id}.sector_l1")
+        if parent not in sectors["sector_l1"]:
+            raise ValueError(f"sector_l2.{category_id} references undefined sector_l1 {parent}")
+        _keyword_dictionary({category_id: {"keywords": category["keywords"]}}, "sector_l2")
     _keyword_dictionary(config["themes"], "themes")
     if not isinstance(config["tickers"], dict):
         raise ValueError("tickers must be an object")
-    ticker_fields = {"company_aliases", "official_industry", "sector_l1", "sector_l2", "themes"}
+    ticker_fields = {"additional_aliases", "sector_l1", "sector_l2", "themes"}
     for ticker, mapping in config["tickers"].items():
         _non_empty_string(ticker, "ticker")
         if not isinstance(mapping, dict) or set(mapping) != ticker_fields:
             raise ValueError(f"ticker {ticker} must contain exactly {sorted(ticker_fields)}")
-        aliases = mapping["company_aliases"]
-        if not isinstance(aliases, list) or not aliases:
-            raise ValueError(f"ticker {ticker} company_aliases must be a non-empty list")
+        aliases = mapping["additional_aliases"]
+        if not isinstance(aliases, list):
+            raise ValueError(f"ticker {ticker} additional_aliases must be a list")
         for alias in aliases:
-            _non_empty_string(alias, f"ticker {ticker} company alias")
-        _non_empty_string(mapping["official_industry"], f"ticker {ticker} official_industry")
+            _non_empty_string(alias, f"ticker {ticker} additional alias")
         for layer in ("sector_l1", "sector_l2"):
-            category_id = _non_empty_string(mapping[layer], f"ticker {ticker} {layer}")
+            category_id = mapping[layer]
+            if category_id is None:
+                continue
+            _non_empty_string(category_id, f"ticker {ticker} {layer}")
             if category_id not in sectors[layer]:
                 raise ValueError(f"ticker {ticker} references undefined {layer} {category_id}")
+        if mapping["sector_l2"] is not None and mapping["sector_l1"] is None:
+            raise ValueError(f"ticker {ticker} sector_l2 requires sector_l1")
+        if mapping["sector_l2"] is not None:
+            parent = sectors["sector_l2"][mapping["sector_l2"]]["sector_l1"]
+            if parent != mapping["sector_l1"]:
+                raise ValueError(f"ticker {ticker} sector_l2 is not coherent with sector_l1")
         themes = mapping["themes"]
         if not isinstance(themes, list):
             raise ValueError(f"ticker {ticker} themes must be a list")
@@ -101,25 +118,43 @@ def _matching_keywords(text: str, keywords: list[str]) -> list[str]:
 
 
 def match_news(
-    record: dict[str, Any], ticker: str, taxonomy: dict[str, Any] | None = None,
+    record: dict[str, Any], ticker: str, company_identity: dict[str, Any] | None,
+    taxonomy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return deterministic keyword matches for one record and covered ticker."""
+    """Match one record using caller-supplied identity plus optional enrichment.
+
+    ``company_identity`` is the compact data.py identity; ``name_ja`` and
+    ``name_en`` are the only automatic aliases. An absent ticker enrichment is
+    valid and simply disables Sector and Theme matching.
+    """
     config = validate_taxonomy(taxonomy) if taxonomy is not None else load_taxonomy()
     ticker = str(ticker)
-    if ticker not in config["tickers"]:
-        raise ValueError(f"unknown news taxonomy ticker: {ticker}")
     title = record.get("title")
     summary = record.get("summary")
     if not isinstance(title, str) or not isinstance(summary, str):
         raise ValueError("news record title and summary must be strings")
     text = f"{title}\n{summary}"
-    mapping = config["tickers"][ticker]
+    mapping = config["tickers"].get(ticker)
     result: dict[str, Any] = {}
-    company = _matching_keywords(text, mapping["company_aliases"])
+    aliases = []
+    if company_identity is not None:
+        if not isinstance(company_identity, dict):
+            raise ValueError("company_identity must be an object or null")
+        for field in ("name_ja", "name_en"):
+            value = company_identity.get(field)
+            if isinstance(value, str) and value.strip() and value not in aliases:
+                aliases.append(value)
+    if mapping:
+        aliases.extend(alias for alias in mapping["additional_aliases"] if alias not in aliases)
+    company = _matching_keywords(text, aliases)
     if company:
         result["company"] = {"keywords": company}
+    if not mapping:
+        return result
     for layer in ("sector_l1", "sector_l2"):
         category_id = mapping[layer]
+        if category_id is None:
+            continue
         matched = _matching_keywords(text, config["sectors"][layer][category_id]["keywords"])
         if matched:
             result[layer] = {"id": category_id, "keywords": matched}

@@ -8,6 +8,20 @@ import data
 
 
 class JQuantsParsingTest(unittest.TestCase):
+    def test_actual_shaped_master_fixture_produces_compact_identity(self):
+        raw = {"endpoint": data.MASTER_PATH, "pages": [{"data": [{
+            "Date": "2025-06-30", "Code": "72030", "CoName": "トヨタ自動車",
+            "CoNameEn": "TOYOTA MOTOR CORPORATION", "S17": "3",
+            "S17Nm": "自動車・輸送機", "S33": "3700", "S33Nm": "輸送用機器",
+            "ScaleCat": "TOPIX Core30", "Mkt": "0111", "MktNm": "プライム",
+        }]}]}
+        self.assertEqual(data.shape_company_identity(raw, "7203", date(2025, 6, 30)), {
+            "as_of": "2025-06-30", "code": "72030", "name_ja": "トヨタ自動車",
+            "name_en": "TOYOTA MOTOR CORPORATION", "industry_code": "3700",
+            "industry_name": "輸送用機器",
+        })
+        self.assertIsNone(data.shape_company_identity(raw, "7203", date(2025, 6, 29)))
+
     def test_as_of_filters_by_market_and_disclosure_dates_and_uses_selected_records(self):
         prices = {"endpoint": data.PRICE_PATH, "pages": [{"data": [
             {"Date": "2025-06-29", "AdjC": "2500"},
@@ -21,9 +35,15 @@ class JQuantsParsingTest(unittest.TestCase):
         ]}]}
         calls = []
 
-        def fake_request(path, code, api_key):
-            calls.append((path, code, api_key))
-            return prices if path == data.PRICE_PATH else financials
+        identity = {"endpoint": data.MASTER_PATH, "pages": [{"data": [{
+            "Date": "2025-06-30", "Code": "72030", "CoName": "トヨタ自動車",
+            "CoNameEn": "TOYOTA MOTOR CORPORATION", "S33": "3700", "S33Nm": "輸送用機器",
+        }]}]}
+
+        def fake_request(path, code, api_key, as_of=None):
+            calls.append((path, code, api_key, as_of))
+            return {data.PRICE_PATH: prices, data.FINANCIAL_PATH: financials,
+                    data.MASTER_PATH: identity}[path]
 
         with tempfile.TemporaryDirectory() as directory, \
              patch.object(data, "_load_env", return_value={"JQUANTS_API_KEY": "local", "DATA_ROOT": directory}), \
@@ -31,7 +51,8 @@ class JQuantsParsingTest(unittest.TestCase):
             result = data.fetch_research_data("7203", date(2025, 6, 30))
             archived = list(Path(directory).rglob("*.json"))
 
-        self.assertEqual([call[1] for call in calls], ["72030", "72030"])
+        self.assertEqual([call[1] for call in calls], ["72030", "72030", "72030"])
+        self.assertEqual(calls[-1][3], date(2025, 6, 30))
         self.assertEqual(result["price"], 2500)
         self.assertEqual(result["revenue"], 1000)
         self.assertEqual(result["financial_disclosure_date"], "2025-06-28")
@@ -42,7 +63,9 @@ class JQuantsParsingTest(unittest.TestCase):
         })
         self.assertIsNone(result["market"])
         self.assertIsNone(result["sector"])
-        self.assertEqual(len(archived), 2)
+        self.assertEqual(result["company_name"], "トヨタ自動車")
+        self.assertEqual(result["company_identity"]["industry_name"], "輸送用機器")
+        self.assertEqual(len(archived), 3)
 
     def test_data_as_of_ignores_newer_unusable_records(self):
         prices = {"endpoint": data.PRICE_PATH, "pages": [{"data": [
@@ -56,7 +79,9 @@ class JQuantsParsingTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, \
              patch.object(data, "_load_env", return_value={"JQUANTS_API_KEY": "local", "DATA_ROOT": directory}), \
-             patch.object(data, "_request_all", side_effect=[prices, financials]):
+             patch.object(data, "_request_all", side_effect=[
+                 prices, financials, {"endpoint": data.MASTER_PATH, "pages": [{"data": []}]},
+             ]):
             result = data.fetch_research_data("7203")
 
         self.assertEqual(result["price_date"], "2025-06-29")
