@@ -1,7 +1,8 @@
 import json
+import io
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -9,6 +10,36 @@ import main
 
 
 class VerticalSliceTest(unittest.TestCase):
+    def test_news_update_cli_orchestration_and_duplicate_counts(self):
+        source = {"source_id": "official", "name": "Official",
+                  "url": "https://example.test/feed.xml", "default_layer": "market",
+                  "enabled": True}
+        record = {"source": "Official", "published_at": "2026-10-06T00:00:00+00:00",
+                  "retrieved_at": "2026-10-07T00:00:00+00:00", "title": "Update",
+                  "summary": "Summary", "url": "https://example.test/item"}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(main, "load_sources", return_value=[source]), \
+             patch.object(main, "fetch_enabled_sources", return_value=[(source, [record])]), \
+             patch("sys.stdout", new_callable=io.StringIO) as output:
+            first = main.run_news_update(
+                directory, retrieved_at=datetime(2026, 10, 7, tzinfo=timezone.utc),
+            )
+            second = main.run_news_update(
+                directory, retrieved_at=datetime(2026, 10, 7, tzinfo=timezone.utc),
+            )
+        self.assertEqual(first[0], {"source_id": "official", "fetched": 1,
+                                    "new": 1, "duplicate": 0})
+        self.assertEqual(second[0], {"source_id": "official", "fetched": 1,
+                                     "new": 0, "duplicate": 1})
+        self.assertIn("total sources=1 fetched=1 new=0 duplicate=1", output.getvalue())
+
+    def test_news_update_main_returns_failure_for_identified_source(self):
+        with patch("sys.argv", ["main.py", "news-update"]), \
+             patch.object(main, "load_json", return_value={"log_level": "INFO"}), \
+             patch.object(main, "run_news_update",
+                          side_effect=ValueError("News Feed Error: source=broken: offline")):
+            self.assertEqual(main.main(), 1)
+
     def test_analysis_pipeline_writes_utf8_markdown_and_keeps_call_2_independent(self):
         research = {
             "source": "local fixture", "ticker": "7203", "company_name": "トヨタ自動車",

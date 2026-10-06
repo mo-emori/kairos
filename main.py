@@ -3,12 +3,13 @@
 import argparse
 import json
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from data import fetch_research_data
 from llm import bear_risk_analysis, positive_analysis, synthesize_analysis
+from news import fetch_enabled_sources, load_sources, store_news
 from report import render_report, save_report
 from risk import evaluate_risk, is_held
 
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "config.json"
 PORTFOLIO_PATH = ROOT / "data" / "portfolio.json"
 REPORTS_DIR = ROOT / "reports"
+ENV_PATH = ROOT / ".env"
 
 
 def parse_date(value: str) -> date:
@@ -42,7 +44,55 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_parser = subparsers.add_parser("analyze", help="analyze one ticker")
     analyze_parser.add_argument("ticker", help="four-digit Japanese security code")
     analyze_parser.add_argument("--as-of", type=parse_date, metavar="YYYY-MM-DD")
+    subparsers.add_parser("news-update", help="retrieve enabled official RSS feeds")
     return parser
+
+
+def load_data_root(path: Path = ENV_PATH) -> Path:
+    """Load DATA_ROOT without requiring credentials used only by analyze."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ValueError(f"Configuration Error: cannot read {path.name}: {exc}") from exc
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        if key.strip() == "DATA_ROOT" and value.strip().strip("\"'"):
+            return Path(value.strip().strip("\"'"))
+    raise ValueError(f"Configuration Error: DATA_ROOT is not set in {path.name}")
+
+
+def run_news_update(
+    data_root: str | Path | None = None, source_path: str | Path | None = None,
+    retrieved_at: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch enabled sources and persist new URL-unique RSS records."""
+    root = Path(data_root) if data_root is not None else load_data_root()
+    sources = load_sources(source_path) if source_path is not None else load_sources()
+    operation_time = retrieved_at or datetime.now(timezone.utc)
+    results: list[dict[str, Any]] = []
+    for source, records in fetch_enabled_sources(sources, operation_time):
+        written = store_news(records, root)
+        result = {
+            "source_id": source["source_id"],
+            "fetched": len(records),
+            "new": len(written),
+            "duplicate": len(records) - len(written),
+        }
+        results.append(result)
+        print(
+            f"source={result['source_id']} fetched={result['fetched']} "
+            f"new={result['new']} duplicate={result['duplicate']}"
+        )
+    print(
+        "total "
+        f"sources={len(results)} fetched={sum(item['fetched'] for item in results)} "
+        f"new={sum(item['new'] for item in results)} "
+        f"duplicate={sum(item['duplicate'] for item in results)}"
+    )
+    return results
 
 
 def run_analysis(ticker: str, as_of: date | None, model: str | None = None) -> Path:
@@ -76,6 +126,12 @@ def main() -> int:
             logging.getLogger("analyze").error("target=%s message=%s", args.ticker, exc)
             return 1
         print(f"Analysis complete: {report_path}")
+    elif args.command == "news-update":
+        try:
+            run_news_update()
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logging.getLogger("news-update").error("target=feeds message=%s", exc)
+            return 1
     return 0
 
 

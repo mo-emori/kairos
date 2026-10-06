@@ -3,8 +3,12 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
+from urllib.error import URLError
 
 import news
+
+FIXTURES = Path(__file__).with_name("fixtures")
 
 
 RSS = """<?xml version="1.0" encoding="UTF-8"?>
@@ -29,6 +33,96 @@ def parsed(retrieved_at=None):
 
 
 class NewsTest(unittest.TestCase):
+    def test_source_registry_loads_exact_minimal_verified_entries(self):
+        sources = news.load_sources()
+        self.assertEqual([source["source_id"] for source in sources], [
+            "boj_updates", "frb_monetary_policy",
+        ])
+        self.assertTrue(all(set(source) == news.SOURCE_FIELDS for source in sources))
+        self.assertTrue(all(source["default_layer"] == "market" for source in sources))
+
+    def test_source_registry_validation_rejects_invalid_values(self):
+        valid = {
+            "source_id": "one", "name": "One", "url": "https://example.test/feed.xml",
+            "default_layer": "market", "enabled": True,
+        }
+        cases = [
+            [dict(valid, extra=True)],
+            [valid, dict(valid)],
+            [dict(valid, url="file:///feed.xml")],
+            [dict(valid, enabled=1)],
+            [dict(valid, default_layer="other")],
+        ]
+        for case in cases:
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                news.validate_sources(case)
+
+    def test_official_format_fixtures_normalize_aware_timestamps(self):
+        retrieved = datetime(2026, 10, 7, tzinfo=timezone.utc)
+        boj = news.parse_rss((FIXTURES / "boj_whatsnew.xml").read_bytes(), "BOJ", retrieved)
+        fed = news.parse_rss((FIXTURES / "frb_press_monetary.xml").read_bytes(), "Fed", retrieved)
+        self.assertEqual(boj[0]["published_at"], "2026-09-30T23:50:00+00:00")
+        self.assertEqual(fed[0]["published_at"], "2026-09-16T18:00:00+00:00")
+        self.assertEqual(boj[0]["retrieved_at"], "2026-10-07T00:00:00+00:00")
+
+    def test_fetch_enabled_sources_skips_disabled_and_uses_http_contract(self):
+        sources = [
+            {"source_id": "on", "name": "On", "url": "https://example.test/on.xml",
+             "default_layer": "market", "enabled": True},
+            {"source_id": "off", "name": "Off", "url": "https://example.test/off.xml",
+             "default_layer": "market", "enabled": False},
+        ]
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value.read.return_value = RSS.encode("utf-8")
+        with patch.object(news, "urlopen", return_value=response) as mocked:
+            fetched = news.fetch_enabled_sources(
+                sources, datetime(2026, 10, 7, tzinfo=timezone.utc),
+            )
+        self.assertEqual(len(fetched), 1)
+        request = mocked.call_args.args[0]
+        self.assertEqual(request.full_url, "https://example.test/on.xml")
+        self.assertEqual(request.get_header("User-agent"), news.USER_AGENT)
+        self.assertEqual(mocked.call_args.kwargs["timeout"], 15)
+
+    def test_multiple_sources_retrieve_store_and_repeat_without_duplicates(self):
+        sources = [
+            {"source_id": "boj", "name": "BOJ", "url": "https://example.test/boj.xml",
+             "default_layer": "market", "enabled": True},
+            {"source_id": "fed", "name": "Fed", "url": "https://example.test/fed.xml",
+             "default_layer": "market", "enabled": True},
+        ]
+        payloads = [
+            (FIXTURES / "boj_whatsnew.xml").read_bytes(),
+            (FIXTURES / "frb_press_monetary.xml").read_bytes(),
+        ]
+        retrieved = datetime(2026, 10, 7, tzinfo=timezone.utc)
+
+        def responses():
+            result = []
+            for payload in payloads:
+                response = unittest.mock.MagicMock()
+                response.__enter__.return_value.read.return_value = payload
+                result.append(response)
+            return result
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(news, "urlopen", side_effect=responses()):
+                first = news.fetch_enabled_sources(sources, retrieved)
+            written = [news.store_news(records, directory) for _, records in first]
+            with patch.object(news, "urlopen", side_effect=responses()):
+                second = news.fetch_enabled_sources(sources, retrieved)
+            repeated = [news.store_news(records, directory) for _, records in second]
+        self.assertEqual([len(items) for items in written], [1, 1])
+        self.assertEqual(repeated, [[], []])
+
+    def test_fetch_failure_is_fail_fast_and_identifies_source(self):
+        source = {"source_id": "broken", "name": "Broken",
+                  "url": "https://example.test/broken.xml",
+                  "default_layer": "market", "enabled": True}
+        with patch.object(news, "urlopen", side_effect=URLError("offline")), \
+             self.assertRaisesRegex(ValueError, "source=broken.*offline"):
+            news.fetch_enabled_sources([source], datetime.now(timezone.utc))
+
     def test_rss_parse_normalizes_exact_minimal_record(self):
         records = parsed()
         self.assertEqual(records[0], {

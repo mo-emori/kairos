@@ -1,0 +1,16 @@
+[
+  {
+    "source_id": "boj_updates",
+    "name": "Bank of Japan Updates",
+    "url": "https://www.boj.or.jp/rss/whatsnew.xml",
+    "default_layer": "market",
+    "enabled": true
+  },
+  {
+    "source_id": "frb_monetary_policy",
+    "name": "Federal Reserve Monetary Policy",
+    "url": "https://www.federalreserve.gov/feeds/press_monetary.xml",
+    "default_layer": "market",
+    "enabled": true
+  }
+]

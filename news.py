@@ -7,12 +7,19 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
 RECORD_FIELDS: tuple[str, ...] = (
     "source", "published_at", "retrieved_at", "title", "summary", "url",
 )
 DEFAULT_TAXONOMY_PATH = Path(__file__).with_name("data") / "news_taxonomy.json"
+DEFAULT_SOURCE_PATH = Path(__file__).with_name("data") / "news_sources.json"
+SOURCE_FIELDS = {"source_id", "name", "url", "default_layer", "enabled"}
+DEFAULT_LAYERS = {"market", "sector", "theme", "company"}
+USER_AGENT = "KAIROS/0.3.1 RSS collector"
 
 
 def _non_empty_string(value: Any, name: str) -> str:
@@ -100,6 +107,41 @@ def load_taxonomy(path: str | Path = DEFAULT_TAXONOMY_PATH) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot load news taxonomy: {path}") from exc
     return validate_taxonomy(config)
+
+
+def validate_sources(value: Any) -> list[dict[str, Any]]:
+    """Validate and return the minimal Human-editable source registry."""
+    if not isinstance(value, list):
+        raise ValueError("news source registry must be a list")
+    source_ids: set[str] = set()
+    for index, source in enumerate(value):
+        label = f"news source {index}"
+        if not isinstance(source, dict) or set(source) != SOURCE_FIELDS:
+            raise ValueError(f"{label} must contain exactly {sorted(SOURCE_FIELDS)}")
+        source_id = _non_empty_string(source["source_id"], f"{label} source_id")
+        if source_id in source_ids:
+            raise ValueError(f"duplicate news source_id: {source_id}")
+        source_ids.add(source_id)
+        _non_empty_string(source["name"], f"{label} name")
+        url = _non_empty_string(source["url"], f"{label} url")
+        parsed_url = urlparse(url)
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            raise ValueError(f"{label} url must be an http/https URL")
+        if source["default_layer"] not in DEFAULT_LAYERS:
+            raise ValueError(f"{label} default_layer is not recognized")
+        if not isinstance(source["enabled"], bool):
+            raise ValueError(f"{label} enabled must be a boolean")
+    return value
+
+
+def load_sources(path: str | Path = DEFAULT_SOURCE_PATH) -> list[dict[str, Any]]:
+    """Load and validate the Human-editable RSS source registry."""
+    try:
+        with Path(path).open(encoding="utf-8") as source_file:
+            sources = json.load(source_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot load news source registry: {path}") from exc
+    return validate_sources(sources)
 
 
 def _matching_keywords(text: str, keywords: list[str]) -> list[str]:
@@ -222,6 +264,42 @@ def parse_rss(
             "url": url,
         })
     return records
+
+
+def fetch_source(
+    source: dict[str, Any], retrieved_at: datetime, timeout: float = 15,
+) -> list[dict[str, str]]:
+    """Retrieve and parse one validated RSS source without following item links."""
+    validate_sources([source])
+    request = Request(source["url"], headers={
+        "User-Agent": USER_AGENT,
+        "Accept": "application/rss+xml, application/xml, text/xml;q=0.9",
+    })
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            xml = response.read()
+    except HTTPError as exc:
+        raise ValueError(
+            f"News Feed Error: source={source['source_id']} HTTP {exc.code}"
+        ) from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        detail = exc.reason if isinstance(exc, URLError) else exc
+        raise ValueError(f"News Feed Error: source={source['source_id']}: {detail}") from exc
+    try:
+        return parse_rss(xml, source["name"], retrieved_at)
+    except ValueError as exc:
+        raise ValueError(f"News Feed Error: source={source['source_id']}: {exc}") from exc
+
+
+def fetch_enabled_sources(
+    sources: list[dict[str, Any]], retrieved_at: datetime,
+) -> list[tuple[dict[str, Any], list[dict[str, str]]]]:
+    """Fetch enabled sources in registry order; fail immediately on one source error."""
+    validate_sources(sources)
+    return [
+        (source, fetch_source(source, retrieved_at))
+        for source in sources if source["enabled"]
+    ]
 
 
 def _stored_urls(raw_dir: Path) -> set[str]:
