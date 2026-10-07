@@ -8,6 +8,17 @@ import data
 
 
 class JQuantsParsingTest(unittest.TestCase):
+    @staticmethod
+    def _required_raw():
+        prices = {"endpoint": data.PRICE_PATH, "pages": [{"data": [
+            {"Date": "2026-10-06", "AdjC": "3000"},
+        ]}]}
+        financials = {"endpoint": data.FINANCIAL_PATH, "pages": [{"data": [
+            {"DiscDate": "2026-08-01", "Sales": "1000", "OP": "100", "NP": "70",
+             "EPS": "100", "EqAR": "40"},
+        ]}]}
+        return prices, financials
+
     def test_actual_shaped_master_fixture_produces_compact_identity(self):
         raw = {"endpoint": data.MASTER_PATH, "pages": [{"data": [{
             "Date": "2025-06-30", "Code": "72030", "CoName": "トヨタ自動車",
@@ -87,6 +98,91 @@ class JQuantsParsingTest(unittest.TestCase):
         self.assertEqual(result["price_date"], "2025-06-29")
         self.assertEqual(result["financial_disclosure_date"], "2025-06-28")
         self.assertEqual(result["data_as_of"], "2025-06-29")
+
+    def test_master_coverage_error_retries_at_parsed_upper_date(self):
+        requested = date(2026, 10, 7)
+        fallback = {"endpoint": data.MASTER_PATH, "pages": [{"data": [{
+            "Date": "2026-07-15", "Code": "72030", "CoName": "Toyota",
+        }]}]}
+        coverage_error = ValueError(
+            "J-Quants API Error: /equities/master HTTP 400: "
+            '{"message":"Your subscription covers the following dates: '
+            '2024-07-15 ~ 2026-07-15. If you want more data"}'
+        )
+        with patch.object(data, "_request_all", side_effect=[coverage_error, fallback]) as request:
+            raw = data._fetch_company_identity_raw("72030", "local", requested)
+        self.assertIs(raw, fallback)
+        self.assertEqual(data.shape_company_identity(raw, "7203", requested)["as_of"], "2026-07-15")
+        self.assertEqual(request.call_args_list[1].args, (
+            data.MASTER_PATH, "72030", "local", date(2026, 7, 15),
+        ))
+
+    def test_master_coverage_fallback_is_used_and_warns_with_actual_date(self):
+        prices, financials = self._required_raw()
+        coverage_error = ValueError(
+            "J-Quants API Error: /equities/master HTTP 400: "
+            '{"message":"Your subscription covers the following dates: '
+            '2024-07-15 ~ 2026-07-15."}'
+        )
+        identity = {"endpoint": data.MASTER_PATH, "pages": [{"data": [{
+            "Date": "2026-07-15", "Code": "72030", "CoName": "Toyota",
+        }]}]}
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(data, "_load_env", return_value={
+                 "JQUANTS_API_KEY": "local", "DATA_ROOT": directory,
+             }), \
+             patch.object(data, "_request_all", side_effect=[
+                 prices, financials, coverage_error, identity,
+             ]), \
+             self.assertLogs("jquants", level="WARNING") as logs:
+            result = data.fetch_research_data("7203", date(2026, 10, 7))
+        self.assertEqual(result["company_identity"]["as_of"], "2026-07-15")
+        warning = " ".join(logs.output)
+        self.assertIn("requested_date=2026-10-07", warning)
+        self.assertIn("actual_as_of=2026-07-15", warning)
+
+    def test_master_fallback_snapshot_after_analysis_as_of_is_rejected(self):
+        raw = {"endpoint": data.MASTER_PATH, "pages": [{"data": [{
+            "Date": "2026-07-16", "Code": "72030", "CoName": "Future Toyota",
+        }]}]}
+        self.assertIsNone(data.shape_company_identity(raw, "7203", date(2026, 7, 15)))
+
+    def test_analysis_before_master_coverage_does_not_query_future_snapshot(self):
+        coverage_error = ValueError(
+            "J-Quants API Error: /equities/master HTTP 400: "
+            '{"message":"Your subscription covers the following dates: '
+            '2024-07-15 ~ 2026-07-15."}'
+        )
+        with patch.object(data, "_request_all", side_effect=coverage_error) as request:
+            raw = data._fetch_company_identity_raw("72030", "local", date(2024, 7, 14))
+        self.assertIsNone(raw)
+        self.assertEqual(request.call_count, 1)
+
+    def test_total_identity_failure_is_null_and_research_data_continues(self):
+        prices, financials = self._required_raw()
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(data, "_load_env", return_value={
+                 "JQUANTS_API_KEY": "local", "DATA_ROOT": directory,
+             }), \
+             patch.object(data, "_request_all", side_effect=[
+                 prices, financials, ValueError("J-Quants API Error: /equities/master: offline"),
+             ]), \
+             self.assertLogs("jquants", level="WARNING") as logs:
+            result = data.fetch_research_data("7203", date(2026, 10, 7))
+        self.assertIsNone(result["company_identity"])
+        self.assertEqual(result["company_name"], "Unavailable")
+        self.assertEqual((result["price"], result["revenue"]), (3000, 1000))
+        self.assertEqual(len(result["raw_paths"]), 2)
+        self.assertIn("requested_date=2026-10-07", " ".join(logs.output))
+
+    def test_price_and_financial_failures_remain_required(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(data, "_load_env", return_value={
+                 "JQUANTS_API_KEY": "local", "DATA_ROOT": directory,
+             }), \
+             patch.object(data, "_request_all", side_effect=ValueError("required endpoint failed")):
+            with self.assertRaisesRegex(ValueError, "required endpoint failed"):
+                data.fetch_research_data("7203", date(2026, 10, 7))
 
     def test_same_period_prior_year_matching_rejects_previous_mismatched_period(self):
         current = {"CurPerType": "2Q", "CurFYEn": "2026-03-31"}

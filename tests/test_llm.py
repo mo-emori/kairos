@@ -21,7 +21,8 @@ class LlmContextAndSchemaTest(unittest.TestCase):
 
         context = {"ticker": "7203", "analysis_as_of": "2026-10-05",
                    "data_as_of": "2026-10-02", "investment_horizon": "3 months",
-                   "company": {"forecast": {"eps": None}}}
+                   "company": {"forecast": {"eps": None}},
+                   "news": [{"source": "Official", "title": "Stored evidence"}]}
         with patch.object(llm, "_client", return_value=SimpleNamespace(responses=Responses())):
             call_1 = llm.positive_analysis(context, "model")
             llm.bear_risk_analysis(context, "model")
@@ -37,6 +38,7 @@ class LlmContextAndSchemaTest(unittest.TestCase):
             self.assertIn("Sector context is an industry baseline", prompt)
             self.assertIn("Company context is company-specific evidence", prompt)
             self.assertIn("must not be treated as causal proof", prompt)
+            self.assertIn("An empty News list means unavailable", prompt)
 
     def _capture_synthesis(self, held):
         captured = {}

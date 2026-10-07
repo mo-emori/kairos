@@ -13,7 +13,9 @@ LOGGER = logging.getLogger("openai")
 CONTEXT_GUIDANCE = (
     "Market context is a broad baseline, Sector context is an industry baseline, and Company context "
     "is company-specific evidence. Relative performance is descriptive and must not be treated as "
-    "causal proof. null means unavailable and must never be treated as neutral or zero. "
+    "causal proof. News is evidence available as-of and co-occurrence is not causal proof. An empty News "
+    "list means unavailable/no collected matching evidence, not that nothing happened. null means "
+    "unavailable and must never be treated as neutral or zero. "
 )
 
 
@@ -80,7 +82,7 @@ def positive_analysis(research_data: dict[str, Any], model: str) -> dict[str, An
     }
     prompt = (
         "Produce Call 1: concise Fundamental, Valuation, and Bull analysis with concise evidence. "
-        "Use only the supplied J-Quants research_data. Do not use outside knowledge, training-memory "
+        "Use only the supplied research_data. Do not use outside knowledge, training-memory "
         "facts about the company, future information, or unstated current market information. "
         "Treat analysis_as_of and data_as_of as strict time boundaries. " + CONTEXT_GUIDANCE + "research_data="
         + json.dumps(research_data, ensure_ascii=False)
@@ -111,7 +113,7 @@ def bear_risk_analysis(research_data: dict[str, Any], model: str) -> dict[str, A
     }
     prompt = (
         "Independently produce Call 2: concise Bear and Risk analysis with concise evidence. "
-        "Use only the supplied J-Quants research_data; no Call 1 output, thesis, recommendation, or "
+        "Use only the supplied research_data; no Call 1 output, thesis, recommendation, or "
         "conclusions are available. Do not use outside knowledge, training-memory facts about the company, "
         "future information, or unstated current market information. Treat analysis_as_of and data_as_of "
         "as strict time boundaries. " + CONTEXT_GUIDANCE + "research_data="

@@ -2,6 +2,7 @@
   "log_level": "INFO",
   "model": "gpt-5.6-sol",
   "investment_horizon": "3 months",
+  "news_top_n_per_layer": 3,
   "max_position_ratio": 0.1,
   "min_cash_ratio": 0.2
 }

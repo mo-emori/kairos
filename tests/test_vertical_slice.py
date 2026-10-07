@@ -99,12 +99,16 @@ class VerticalSliceTest(unittest.TestCase):
             config_path = root / "config.json"
             portfolio_path = root / "portfolio.json"
             config_path.write_text(json.dumps({"model": "local-model", "investment_horizon": "3 months",
+                                               "news_top_n_per_layer": 3,
                                                "max_position_ratio": 0.1,
                                                "min_cash_ratio": 0.2}), encoding="utf-8")
             portfolio_path.write_text(json.dumps(portfolio), encoding="utf-8")
             with patch.multiple(main, CONFIG_PATH=config_path, PORTFOLIO_PATH=portfolio_path,
                                 REPORTS_DIR=root / "reports"), \
                  patch.object(main, "fetch_research_data", return_value=research), \
+                 patch.object(main, "load_data_root", return_value=root), \
+                 patch("news.urlopen", side_effect=AssertionError("News network forbidden")), \
+                 patch("news.fetch_url", side_effect=AssertionError("News network forbidden")), \
                  patch.object(main, "positive_analysis", side_effect=fake_positive), \
                  patch.object(main, "bear_risk_analysis", side_effect=fake_bear), \
                  patch.object(main, "synthesize_analysis", side_effect=fake_synthesis):
@@ -112,7 +116,7 @@ class VerticalSliceTest(unittest.TestCase):
 
             markdown = report_path.read_text(encoding="utf-8")
 
-        expected_context = dict(research, investment_horizon="3 months")
+        expected_context = dict(research, investment_horizon="3 months", news=[])
         self.assertEqual(seen["positive"], (expected_context, "local-model"))
         self.assertEqual(seen["bear"], (expected_context, "local-model"))
         self.assertNotIn("holding_status", seen["positive"][0])
@@ -124,6 +128,7 @@ class VerticalSliceTest(unittest.TestCase):
         for heading in ("## Human View", "### Fundamental", "### Valuation", "### Bull",
                         "### Bear", "### Risk", "### Contradictions", "### Thesis",
                         "## Market Context", "## Sector Context", "## Company Context",
+                        "## News Context Used",
                         "### Cash Flow", "### Company Forecast",
                         "### Price Trend (Adjusted Close)", "## Allocation", "## Risk Check"):
             self.assertIn(heading, markdown)
@@ -134,6 +139,7 @@ class VerticalSliceTest(unittest.TestCase):
         self.assertIn("Unavailable", markdown)
         self.assertIn("## Market Context\n\nUnavailable", markdown)
         self.assertIn("## Sector Context\n\nUnavailable", markdown)
+        self.assertIn("Unavailable / no eligible matching News", markdown)
 
 
 if __name__ == "__main__":

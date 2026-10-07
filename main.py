@@ -9,7 +9,7 @@ from typing import Any
 
 from data import fetch_research_data
 from llm import bear_risk_analysis, positive_analysis, synthesize_analysis
-from news import enrich_news, fetch_enabled_sources, load_sources, store_news
+from news import enrich_news, fetch_enabled_sources, load_sources, select_news_context, store_news
 from report import render_report, save_report
 from risk import evaluate_risk, is_held
 
@@ -110,7 +110,14 @@ def run_analysis(ticker: str, as_of: date | None, model: str | None = None) -> P
     config = load_json(CONFIG_PATH)
     configured_model = model or str(config["model"])
     research_data = fetch_research_data(ticker, as_of)
-    analysis_context = dict(research_data, investment_horizon=str(config["investment_horizon"]))
+    analysis_date = date.fromisoformat(research_data["analysis_as_of"])
+    news_context = select_news_context(
+        load_data_root(), analysis_date, ticker, research_data.get("company_identity"),
+        int(config["news_top_n_per_layer"]),
+    )
+    analysis_context = dict(
+        research_data, investment_horizon=str(config["investment_horizon"]), news=news_context,
+    )
     portfolio = load_json(PORTFOLIO_PATH)
     held = is_held(portfolio, ticker)
     call_1 = positive_analysis(analysis_context, configured_model)

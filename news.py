@@ -5,7 +5,7 @@ import logging
 import re
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
+from zoneinfo import ZoneInfo
 
 from trafilatura import extract, fetch_url
 
@@ -28,6 +29,7 @@ CONTENT_SUCCESS_FIELDS = {"url", "content_retrieved_at", "status", "text"}
 CONTENT_FAILURE_FIELDS = {"url", "content_retrieved_at", "status", "error"}
 MIN_CONTENT_CHARACTERS = 50
 ENRICH_DELAY_SECONDS = 0.25
+ANALYSIS_TIMEZONE = ZoneInfo("Asia/Tokyo")
 
 
 def _non_empty_string(value: Any, name: str) -> str:
@@ -365,8 +367,23 @@ def load_raw_news(data_root: str | Path) -> list[dict[str, Any]]:
 
 def load_content_urls(data_root: str | Path) -> set[str]:
     """Scan and validate every content JSONL file, returning terminal URL identities."""
+    return set(_load_content_news(data_root))
+
+
+def _aware_timestamp(value: Any, name: str, path: Path) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid {name} in {path}") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"invalid {name} in {path}")
+    return parsed.astimezone(timezone.utc)
+
+
+def _load_content_news(data_root: str | Path) -> dict[str, dict[str, Any]]:
+    """Load terminal Content observations keyed by their unique URL identity."""
     content_dir = Path(data_root) / "news" / "content"
-    urls: set[str] = set()
+    records: dict[str, dict[str, Any]] = {}
     for path in sorted(content_dir.glob("*.jsonl")):
         for record in _read_jsonl(path, "news content"):
             status = record.get("status")
@@ -378,14 +395,108 @@ def load_content_urls(data_root: str | Path) -> set[str]:
             if not isinstance(url, str) or not url or not isinstance(record.get(value_field), str) \
                     or not record[value_field]:
                 raise ValueError(f"invalid news content record in {path}")
-            try:
-                retrieved = datetime.fromisoformat(record["content_retrieved_at"])
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"invalid news content timestamp in {path}") from exc
-            if retrieved.tzinfo is None or retrieved.utcoffset() is None:
-                raise ValueError(f"invalid news content timestamp in {path}")
-            urls.add(url)
-    return urls
+            _aware_timestamp(record.get("content_retrieved_at"), "news content timestamp", path)
+            if url in records:
+                raise ValueError(f"duplicate news content URL in {path}: {url}")
+            records[url] = record
+    return records
+
+
+def analysis_cutoff(analysis_date: date) -> datetime:
+    """Return the exclusive UTC cutoff at midnight after a Tokyo analysis date."""
+    if not isinstance(analysis_date, date):
+        raise ValueError("analysis_date must be a date")
+    next_day = analysis_date + timedelta(days=1)
+    return datetime.combine(next_day, datetime_time.min, tzinfo=ANALYSIS_TIMEZONE).astimezone(
+        timezone.utc
+    )
+
+
+def select_news_context(
+    data_root: str | Path, analysis_date: date, ticker: str,
+    company_identity: dict[str, Any] | None, top_n_per_layer: int,
+    *, sources: list[dict[str, Any]] | None = None,
+    taxonomy: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Build deterministic, compact, as-of-safe News context from local stores only."""
+    if not isinstance(top_n_per_layer, int) or isinstance(top_n_per_layer, bool) \
+            or top_n_per_layer < 1:
+        raise ValueError("news_top_n_per_layer must be a positive integer")
+    source_registry = validate_sources(sources) if sources is not None else load_sources()
+    source_layers = {source["name"]: source["default_layer"] for source in source_registry}
+    taxonomy_config = validate_taxonomy(taxonomy) if taxonomy is not None else load_taxonomy()
+    cutoff = analysis_cutoff(analysis_date)
+    content_by_url = _load_content_news(data_root)
+    candidates: dict[str, list[dict[str, Any]]] = {
+        "market": [], "sector": [], "theme": [], "company": [],
+    }
+
+    for record in load_raw_news(data_root):
+        raw_path = Path(data_root) / "news" / "raw"
+        published = _aware_timestamp(record.get("published_at"), "published_at", raw_path)
+        retrieved = _aware_timestamp(record.get("retrieved_at"), "retrieved_at", raw_path)
+        if published >= cutoff or retrieved >= cutoff:
+            continue
+        content = content_by_url.get(record["url"])
+        content_text = None
+        if content is not None and content["status"] == "success":
+            content_time = _aware_timestamp(
+                content.get("content_retrieved_at"), "news content timestamp",
+                Path(data_root) / "news" / "content",
+            )
+            if content_time < cutoff:
+                content_text = content["text"]
+        matches = match_news(
+            record, ticker, company_identity, taxonomy_config, content_text=content_text,
+        )
+        categories: set[str] = set()
+        default_layer = source_layers.get(record["source"])
+        if default_layer in candidates:
+            categories.add(default_layer)
+        if "company" in matches:
+            categories.add("company")
+        if "sector_l1" in matches or "sector_l2" in matches:
+            categories.add("sector")
+        if "themes" in matches:
+            categories.add("theme")
+        if not categories:
+            continue
+        compact_matches: dict[str, Any] = {"layers": sorted(categories)}
+        sectors = [
+            {"level": layer, "id": matches[layer]["id"]}
+            for layer in ("sector_l1", "sector_l2") if layer in matches
+        ]
+        if sectors:
+            compact_matches["sectors"] = sectors
+        if "themes" in matches:
+            compact_matches["themes"] = [item["id"] for item in matches["themes"]]
+        if "company" in matches:
+            compact_matches["company"] = {"ticker": str(ticker)}
+        item = {
+            "source": record["source"],
+            "published_at": record["published_at"],
+            "title": record["title"],
+            "excerpt": content_excerpt(content_text if content_text is not None else record["summary"]),
+            "url": record["url"],
+            "matches": compact_matches,
+            "_published": published,
+        }
+        for category in categories:
+            candidates[category].append(item)
+
+    selected: dict[str, dict[str, Any]] = {}
+    for category in ("market", "sector", "theme", "company"):
+        ordered = sorted(
+            candidates[category], key=lambda item: (-item["_published"].timestamp(), item["url"]),
+        )
+        for item in ordered[:top_n_per_layer]:
+            selected[item["url"]] = item
+    final = sorted(
+        selected.values(), key=lambda item: (-item["_published"].timestamp(), item["url"]),
+    )
+    for item in final:
+        del item["_published"]
+    return final
 
 
 def store_content(record: dict[str, Any], data_root: str | Path) -> Path:

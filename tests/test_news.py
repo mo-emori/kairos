@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import URLError
@@ -33,6 +33,118 @@ def parsed(retrieved_at=None):
 
 
 class NewsTest(unittest.TestCase):
+    def _write_records(self, directory, kind, records):
+        path = Path(directory) / "news" / kind / "fixture.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "".join(json.dumps(record, ensure_ascii=False) + "\n" for record in records),
+            encoding="utf-8",
+        )
+
+    def _raw(self, url, published, retrieved, title="Macro update", summary="Raw summary"):
+        return {
+            "source": "Market Source", "published_at": published,
+            "retrieved_at": retrieved, "title": title, "summary": summary, "url": url,
+        }
+
+    def test_analysis_cutoff_is_exclusive_next_midnight_in_tokyo(self):
+        self.assertEqual(
+            news.analysis_cutoff(date(2026, 10, 7)),
+            datetime(2026, 10, 7, 15, 0, tzinfo=timezone.utc),
+        )
+
+    def test_selection_as_of_content_fallback_and_historical_empty(self):
+        sources = [{
+            "source_id": "market", "name": "Market Source",
+            "url": "https://example.test/feed", "default_layer": "market", "enabled": True,
+        }]
+        raw = [
+            self._raw("https://example.test/eligible", "2026-10-07T14:58:00+00:00",
+                      "2026-10-07T14:59:00+00:00"),
+            self._raw("https://example.test/future-published", "2026-10-07T15:00:00+00:00",
+                      "2026-10-07T14:00:00+00:00"),
+            self._raw("https://example.test/future-retrieved", "2026-10-07T13:00:00+00:00",
+                      "2026-10-07T15:00:00+00:00"),
+        ]
+        late_text = "LATE-CONTENT " + ("x" * 700)
+        content = [{
+            "url": raw[0]["url"], "content_retrieved_at": "2026-10-07T15:00:00+00:00",
+            "status": "success", "text": late_text,
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            self._write_records(directory, "raw", raw)
+            self._write_records(directory, "content", content)
+            selected = news.select_news_context(
+                directory, date(2026, 10, 7), "0000", None, 3,
+                sources=sources, taxonomy=news.load_taxonomy(),
+            )
+            historical = news.select_news_context(
+                directory, date(2026, 6, 30), "0000", None, 3,
+                sources=sources, taxonomy=news.load_taxonomy(),
+            )
+            content[0]["content_retrieved_at"] = "2026-10-07T14:59:30+00:00"
+            self._write_records(directory, "content", content)
+            enriched = news.select_news_context(
+                directory, date(2026, 10, 7), "0000", None, 3,
+                sources=sources, taxonomy=news.load_taxonomy(),
+            )
+        self.assertEqual([item["url"] for item in selected], [raw[0]["url"]])
+        self.assertEqual(selected[0]["excerpt"], "Raw summary")
+        self.assertEqual(historical, [])
+        self.assertEqual(enriched[0]["excerpt"], news.content_excerpt(late_text))
+        self.assertNotIn(late_text, json.dumps(enriched, ensure_ascii=False))
+        self.assertNotIn("retrieved_at", json.dumps(enriched))
+
+    def test_per_layer_top_n_combines_matches_and_deduplicates_url(self):
+        sources = [{
+            "source_id": "market", "name": "Market Source",
+            "url": "https://example.test/feed", "default_layer": "market", "enabled": True,
+        }]
+        raw = [
+            self._raw(f"https://example.test/{index}", f"2026-10-0{index}T00:00:00+00:00",
+                      "2026-10-07T00:00:00+00:00")
+            for index in range(1, 5)
+        ]
+        raw[0]["title"] = "TOYOTA advances EV and semiconductor strategy"
+        with tempfile.TemporaryDirectory() as directory:
+            self._write_records(directory, "raw", raw)
+            selected = news.select_news_context(
+                directory, date(2026, 10, 7), "7203", TOYOTA, 2,
+                sources=sources, taxonomy=news.load_taxonomy(),
+            )
+        self.assertEqual([item["url"] for item in selected], [
+            "https://example.test/4", "https://example.test/3", "https://example.test/1",
+        ])
+        combined = selected[-1]
+        self.assertEqual(combined["matches"]["layers"], ["company", "market", "theme"])
+        self.assertEqual(combined["matches"]["themes"], ["ev"])
+        self.assertEqual(len({item["url"] for item in selected}), len(selected))
+
+    def test_corrupt_raw_selection_fails_clearly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "news" / "raw" / "bad.jsonl"
+            path.parent.mkdir(parents=True)
+            path.write_text("{broken\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid raw news JSON"):
+                news.select_news_context(directory, date(2026, 10, 7), "7203", TOYOTA, 3)
+
+    def test_report_news_context_shows_selected_item_and_no_news_state(self):
+        from report import _news_context
+
+        item = {
+            "source": "Official", "published_at": "2026-10-07T00:00:00+00:00",
+            "title": "Evidence", "excerpt": "Compact excerpt",
+            "url": "https://example.test/evidence",
+            "matches": {"layers": ["company", "market"],
+                        "company": {"ticker": "7203"}},
+        }
+        rendered = _news_context([item])
+        self.assertIn("Official", rendered)
+        self.assertIn("Compact excerpt", rendered)
+        self.assertIn("company:7203", rendered)
+        self.assertIn(item["url"], rendered)
+        self.assertEqual(_news_context([]), "Unavailable / no eligible matching News")
+
     def test_local_japanese_and_english_html_extract_main_text(self):
         for fixture, expected in (("article_ja.html", "日本銀行"),
                                   ("article_en.html", "economic conditions")):
@@ -308,6 +420,24 @@ class NewsTest(unittest.TestCase):
 
     def test_no_identity_and_no_enrichment_returns_no_company_match(self):
         self.assertEqual(news.match_news({"title": "Anything", "summary": ""}, "0000", None), {})
+
+    def test_null_identity_still_selects_default_market_news(self):
+        sources = [{
+            "source_id": "market", "name": "Market Source",
+            "url": "https://example.test/feed", "default_layer": "market", "enabled": True,
+        }]
+        raw = [self._raw(
+            "https://example.test/market", "2026-10-06T00:00:00+00:00",
+            "2026-10-06T01:00:00+00:00",
+        )]
+        with tempfile.TemporaryDirectory() as directory:
+            self._write_records(directory, "raw", raw)
+            selected = news.select_news_context(
+                directory, date(2026, 10, 7), "0000", None, 3,
+                sources=sources, taxonomy=news.load_taxonomy(),
+            )
+        self.assertEqual([item["url"] for item in selected], ["https://example.test/market"])
+        self.assertEqual(selected[0]["matches"]["layers"], ["market"])
 
     def test_nullable_sector_and_l2_without_l1_validation(self):
         config = news.load_taxonomy()

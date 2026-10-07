@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,11 @@ PRICE_PATH = "/equities/bars/daily"
 FINANCIAL_PATH = "/fins/summary"
 MASTER_PATH = "/equities/master"
 LOGGER = logging.getLogger("jquants")
+
+COVERAGE_ERROR = re.compile(
+    rf"{re.escape(MASTER_PATH)} HTTP 400:.*Your subscription covers the following dates:\s*"
+    r"(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})"
+)
 
 REQUIRED_FIELDS: tuple[str, ...] = (
     "ticker", "analysis_as_of", "data_as_of", "price", "revenue",
@@ -106,6 +112,36 @@ def shape_company_identity(
         "industry_code": text("S33"),
         "industry_name": text("S33Nm"),
     }
+
+
+def _fetch_company_identity_raw(
+    code: str, api_key: str, analysis_as_of: date | None,
+) -> dict[str, Any] | None:
+    """Fetch optional master evidence, retrying only a parsed plan-coverage miss."""
+    try:
+        return _request_all(MASTER_PATH, code, api_key, analysis_as_of)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        match = COVERAGE_ERROR.search(str(exc)) if analysis_as_of is not None else None
+        if match is None:
+            LOGGER.warning(
+                "company identity unavailable requested_date=%s",
+                analysis_as_of.isoformat() if analysis_as_of else "latest",
+            )
+            return None
+        try:
+            coverage_start, coverage_end = map(date.fromisoformat, match.groups())
+        except ValueError:
+            LOGGER.warning("company identity unavailable requested_date=%s", analysis_as_of)
+            return None
+        fallback_date = min(analysis_as_of, coverage_end)
+        if fallback_date < coverage_start:
+            LOGGER.warning("company identity unavailable requested_date=%s", analysis_as_of)
+            return None
+        try:
+            return _request_all(MASTER_PATH, code, api_key, fallback_date)
+        except (OSError, ValueError, KeyError, TypeError):
+            LOGGER.warning("company identity unavailable requested_date=%s", analysis_as_of)
+            return None
 
 
 def _number(value: Any) -> float | int | None:
@@ -248,13 +284,16 @@ def fetch_research_data(ticker: str, as_of: date | None = None) -> dict[str, Any
     code = f"{ticker}0"
     prices_raw = _request_all(PRICE_PATH, code, env["JQUANTS_API_KEY"])
     financials_raw = _request_all(FINANCIAL_PATH, code, env["JQUANTS_API_KEY"])
-    identity_raw = _request_all(MASTER_PATH, code, env["JQUANTS_API_KEY"], as_of)
+    identity_raw = _fetch_company_identity_raw(code, env["JQUANTS_API_KEY"], as_of)
 
     run_time = datetime.now().strftime("%Y%m%dT%H%M%S%f")
     run_label = f"as-of-{as_of.isoformat()}-{run_time}" if as_of else f"run-{run_time}"
     price_raw_path = _archive(Path(env["DATA_ROOT"]), ticker, run_label, "prices", prices_raw)
     financial_raw_path = _archive(Path(env["DATA_ROOT"]), ticker, run_label, "financials", financials_raw)
-    identity_raw_path = _archive(Path(env["DATA_ROOT"]), ticker, run_label, "identity", identity_raw)
+    identity_raw_path = (
+        _archive(Path(env["DATA_ROOT"]), ticker, run_label, "identity", identity_raw)
+        if identity_raw is not None else None
+    )
 
     cutoff = as_of.isoformat() if as_of else None
     prices = [r for r in _records(prices_raw) if r.get("Date") and (cutoff is None or r["Date"] <= cutoff)]
@@ -286,7 +325,17 @@ def fetch_research_data(ticker: str, as_of: date | None = None) -> dict[str, Any
         "forecast": _latest_relevant_forecast(financial_record, financials, price) if financial_record else None,
         "price_trend": _price_trend(prices),
     }
-    identity = shape_company_identity(identity_raw, ticker, as_of)
+    identity = shape_company_identity(identity_raw, ticker, as_of) if identity_raw is not None else None
+    if identity_raw is not None and identity is None:
+        LOGGER.warning(
+            "company identity unavailable requested_date=%s",
+            as_of.isoformat() if as_of else "latest",
+        )
+    elif identity is not None and as_of is not None and identity["as_of"] != as_of.isoformat():
+        LOGGER.warning(
+            "company identity fallback requested_date=%s actual_as_of=%s",
+            as_of.isoformat(), identity["as_of"],
+        )
     return {
         "source": "J-Quants API V2", "ticker": ticker,
         "company_name": (identity or {}).get("name_ja") or (identity or {}).get("name_en") or "Unavailable",
@@ -305,5 +354,8 @@ def fetch_research_data(ticker: str, as_of: date | None = None) -> dict[str, Any
         # The configured Free plan does not provide index OHLC. Keep unavailable
         # contexts explicit rather than treating absence as a neutral/zero value.
         "market": None, "sector": None, "company": company,
-        "raw_paths": [str(price_raw_path), str(financial_raw_path), str(identity_raw_path)],
+        "raw_paths": [
+            str(path) for path in (price_raw_path, financial_raw_path, identity_raw_path)
+            if path is not None
+        ],
     }

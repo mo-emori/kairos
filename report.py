@@ -72,6 +72,32 @@ def _baseline_context(context: dict[str, Any] | None) -> str:
     ])
 
 
+def _news_context(items: list[dict[str, Any]] | None) -> str:
+    if not items:
+        return "Unavailable / no eligible matching News"
+    blocks = []
+    for item in items:
+        matches = item.get("matches") or {}
+        labels = list(matches.get("layers") or [])
+        labels.extend(
+            f"{sector.get('level')}:{sector.get('id')}"
+            for sector in matches.get("sectors") or []
+        )
+        labels.extend(f"theme:{theme}" for theme in matches.get("themes") or [])
+        company = matches.get("company")
+        if company:
+            labels.append(f"company:{company.get('ticker')}")
+        blocks.append("\n".join([
+            f"### {item.get('title') or 'Unavailable'}",
+            f"- Source: {item.get('source') or 'Unavailable'}",
+            f"- Published: {item.get('published_at') or 'Unavailable'}",
+            f"- Matched: {', '.join(labels) or 'Unavailable'}",
+            f"- Excerpt: {item.get('excerpt') or 'Unavailable'}",
+            f"- URL: {item.get('url') or 'Unavailable'}",
+        ]))
+    return "\n\n".join(blocks)
+
+
 def render_report(
     research_data: dict[str, Any],
     call_1: dict[str, Any],
@@ -126,6 +152,10 @@ def render_report(
 ## Company Context
 
 {_company_context(research_data.get('company'))}
+
+## News Context Used
+
+{_news_context(research_data.get('news'))}
 
 ## Call 1 — Positive Analysis
 
