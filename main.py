@@ -9,7 +9,7 @@ from typing import Any
 
 from data import fetch_research_data
 from llm import bear_risk_analysis, positive_analysis, synthesize_analysis
-from news import fetch_enabled_sources, load_sources, store_news
+from news import enrich_news, fetch_enabled_sources, load_sources, store_news
 from report import render_report, save_report
 from risk import evaluate_risk, is_held
 
@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument("ticker", help="four-digit Japanese security code")
     analyze_parser.add_argument("--as-of", type=parse_date, metavar="YYYY-MM-DD")
     subparsers.add_parser("news-update", help="retrieve enabled official RSS feeds")
+    subparsers.add_parser("news-enrich", help="extract content from stored Raw News URLs")
     return parser
 
 
@@ -95,6 +96,14 @@ def run_news_update(
     return results
 
 
+def run_news_enrich(data_root: str | Path | None = None) -> dict[str, int]:
+    """Enrich only URLs already captured in the Raw News store."""
+    root = Path(data_root) if data_root is not None else load_data_root()
+    counts = enrich_news(root)
+    print(" ".join(f"{name}={value}" for name, value in counts.items()))
+    return counts
+
+
 def run_analysis(ticker: str, as_of: date | None, model: str | None = None) -> Path:
     if len(ticker) != 4 or not ticker.isdigit():
         raise ValueError("ticker must be a four-digit security code")
@@ -131,6 +140,12 @@ def main() -> int:
             run_news_update()
         except (OSError, ValueError, KeyError, TypeError) as exc:
             logging.getLogger("news-update").error("target=feeds message=%s", exc)
+            return 1
+    elif args.command == "news-enrich":
+        try:
+            run_news_enrich()
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logging.getLogger("news-enrich").error("target=content message=%s", exc)
             return 1
     return 0
 

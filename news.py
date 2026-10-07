@@ -1,7 +1,9 @@
 """Minimal RSS storage and deterministic controlled-taxonomy matching."""
 
 import json
+import logging
 import re
+import time
 import unicodedata
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -12,6 +14,8 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
+from trafilatura import extract, fetch_url
+
 RECORD_FIELDS: tuple[str, ...] = (
     "source", "published_at", "retrieved_at", "title", "summary", "url",
 )
@@ -20,6 +24,10 @@ DEFAULT_SOURCE_PATH = Path(__file__).with_name("data") / "news_sources.json"
 SOURCE_FIELDS = {"source_id", "name", "url", "default_layer", "enabled"}
 DEFAULT_LAYERS = {"market", "sector", "theme", "company"}
 USER_AGENT = "KAIROS/0.3.1 RSS collector"
+CONTENT_SUCCESS_FIELDS = {"url", "content_retrieved_at", "status", "text"}
+CONTENT_FAILURE_FIELDS = {"url", "content_retrieved_at", "status", "error"}
+MIN_CONTENT_CHARACTERS = 50
+ENRICH_DELAY_SECONDS = 0.25
 
 
 def _non_empty_string(value: Any, name: str) -> str:
@@ -161,7 +169,7 @@ def _matching_keywords(text: str, keywords: list[str]) -> list[str]:
 
 def match_news(
     record: dict[str, Any], ticker: str, company_identity: dict[str, Any] | None,
-    taxonomy: dict[str, Any] | None = None,
+    taxonomy: dict[str, Any] | None = None, content_text: str | None = None,
 ) -> dict[str, Any]:
     """Match one record using caller-supplied identity plus optional enrichment.
 
@@ -175,7 +183,8 @@ def match_news(
     summary = record.get("summary")
     if not isinstance(title, str) or not isinstance(summary, str):
         raise ValueError("news record title and summary must be strings")
-    text = f"{title}\n{summary}"
+    excerpt = content_excerpt(content_text) if content_text is not None else ""
+    text = f"{title}\n{summary}" + (f"\n{excerpt}" if excerpt else "")
     mapping = config["tickers"].get(ticker)
     result: dict[str, Any] = {}
     aliases = []
@@ -318,6 +327,152 @@ def _stored_urls(raw_dir: Path) -> set[str]:
                     raise ValueError(f"invalid news URL in {path}:{line_number}")
                 urls.add(url)
     return urls
+
+
+def _read_jsonl(path: Path, kind: str) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    with path.open(encoding="utf-8") as jsonl_file:
+        for line_number, line in enumerate(jsonl_file, start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid {kind} JSON in {path}:{line_number}") from exc
+            if not isinstance(record, dict):
+                raise ValueError(f"invalid {kind} record in {path}:{line_number}")
+            records.append(record)
+    return records
+
+
+def load_raw_news(data_root: str | Path) -> list[dict[str, Any]]:
+    """Load all stored Raw News records, preserving first-seen URL order."""
+    raw_dir = Path(data_root) / "news" / "raw"
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in sorted(raw_dir.glob("*.jsonl")):
+        for record in _read_jsonl(path, "raw news"):
+            if set(record) != set(RECORD_FIELDS):
+                raise ValueError(f"invalid raw news fields in {path}")
+            url = record.get("url")
+            if not isinstance(url, str) or not url:
+                raise ValueError(f"invalid raw news URL in {path}")
+            if url not in seen:
+                seen.add(url)
+                records.append(record)
+    return records
+
+
+def load_content_urls(data_root: str | Path) -> set[str]:
+    """Scan and validate every content JSONL file, returning terminal URL identities."""
+    content_dir = Path(data_root) / "news" / "content"
+    urls: set[str] = set()
+    for path in sorted(content_dir.glob("*.jsonl")):
+        for record in _read_jsonl(path, "news content"):
+            status = record.get("status")
+            expected = CONTENT_SUCCESS_FIELDS if status == "success" else CONTENT_FAILURE_FIELDS
+            if status not in {"success", "failed"} or set(record) != expected:
+                raise ValueError(f"invalid news content fields in {path}")
+            url = record.get("url")
+            value_field = "text" if status == "success" else "error"
+            if not isinstance(url, str) or not url or not isinstance(record.get(value_field), str) \
+                    or not record[value_field]:
+                raise ValueError(f"invalid news content record in {path}")
+            try:
+                retrieved = datetime.fromisoformat(record["content_retrieved_at"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid news content timestamp in {path}") from exc
+            if retrieved.tzinfo is None or retrieved.utcoffset() is None:
+                raise ValueError(f"invalid news content timestamp in {path}")
+            urls.add(url)
+    return urls
+
+
+def store_content(record: dict[str, Any], data_root: str | Path) -> Path:
+    """Append one exact terminal content record to its UTC daily JSONL file."""
+    status = record.get("status")
+    expected = CONTENT_SUCCESS_FIELDS if status == "success" else CONTENT_FAILURE_FIELDS
+    if status not in {"success", "failed"} or set(record) != expected:
+        raise ValueError("news content record has invalid fields")
+    value_field = "text" if status == "success" else "error"
+    if not isinstance(record.get("url"), str) or not record["url"] \
+            or not isinstance(record.get(value_field), str) or not record[value_field]:
+        raise ValueError("news content record has invalid values")
+    try:
+        retrieved = datetime.fromisoformat(record["content_retrieved_at"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("content_retrieved_at must be an ISO 8601 datetime") from exc
+    if retrieved.tzinfo is None or retrieved.utcoffset() is None:
+        raise ValueError("content_retrieved_at must include a timezone")
+    day = retrieved.astimezone(timezone.utc).date().isoformat()
+    path = Path(data_root) / "news" / "content" / f"{day}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as jsonl_file:
+        json.dump(record, jsonl_file, ensure_ascii=False, separators=(",", ":"))
+        jsonl_file.write("\n")
+    return path
+
+
+def normalize_content_text(text: str) -> str:
+    """Apply only stable newline normalization and outer whitespace trimming."""
+    if not isinstance(text, str):
+        return ""
+    return text.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def content_excerpt(text: str) -> str:
+    """Return the deterministic first 600 Unicode characters of article text."""
+    return normalize_content_text(text)[:600]
+
+
+def retrieve_article_text(url: str) -> str:
+    """Download normal HTML and extract its main text with Trafilatura."""
+    downloaded = fetch_url(url)
+    if not downloaded:
+        raise ValueError("download returned no HTML")
+    text = normalize_content_text(extract(downloaded) or "")
+    if len(text) < MIN_CONTENT_CHARACTERS:
+        raise ValueError("extracted text is empty or too short")
+    return text
+
+
+def enrich_news(
+    data_root: str | Path, *, now: Any = None, sleep: Any = None,
+) -> dict[str, int]:
+    """Best-effort enrichment of unique, RSS-captured URLs not yet terminal."""
+    records = load_raw_news(data_root)
+    enriched = load_content_urls(data_root)
+    pending = [record for record in records if record["url"] not in enriched]
+    counts = {"processed": 0, "success": 0,
+              "already_enriched": len(records) - len(pending), "failed": 0}
+    clock = now if now is not None else (lambda: datetime.now(timezone.utc))
+    sleeper = sleep if sleep is not None else time.sleep
+    logger = logging.getLogger("news-enrich")
+    for index, raw_record in enumerate(pending):
+        if index:
+            sleeper(ENRICH_DELAY_SECONDS)
+        url = raw_record["url"]
+        try:
+            text = retrieve_article_text(url)
+            status = "success"
+        except Exception as exc:  # one article must never abort the batch
+            status = "failed"
+            if isinstance(exc, ValueError):
+                error = str(exc)
+            else:
+                error = f"article retrieval raised {type(exc).__name__}"
+            logger.warning("url=%s reason=%s", url, error)
+        retrieved_at = clock()
+        timestamp = _utc_iso(retrieved_at, "content_retrieved_at")
+        record = {"url": url, "content_retrieved_at": timestamp, "status": status}
+        if status == "success":
+            record["text"] = text
+        else:
+            record["error"] = error
+        store_content(record, data_root)
+        counts["processed"] += 1
+        counts[status] += 1
+    return counts
 
 
 def store_news(records: list[dict[str, Any]], data_root: str | Path) -> list[dict[str, Any]]:

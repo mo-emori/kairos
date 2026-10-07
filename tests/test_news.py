@@ -33,6 +33,61 @@ def parsed(retrieved_at=None):
 
 
 class NewsTest(unittest.TestCase):
+    def test_local_japanese_and_english_html_extract_main_text(self):
+        for fixture, expected in (("article_ja.html", "日本銀行"),
+                                  ("article_en.html", "economic conditions")):
+            with self.subTest(fixture=fixture), \
+                 patch.object(news, "fetch_url", return_value=(FIXTURES / fixture).read_text(
+                     encoding="utf-8")):
+                text = news.retrieve_article_text(f"https://example.test/{fixture}")
+            self.assertIn(expected, text)
+
+    def test_content_excerpt_is_normalized_and_exactly_600_characters(self):
+        text = "  " + ("あ" * 599) + "\r\nKEYWORD-after-limit  "
+        self.assertEqual(news.content_excerpt(text), ("あ" * 599) + "\n")
+        self.assertEqual(len(news.content_excerpt(text)), 600)
+
+    def test_match_news_uses_excerpt_and_metadata_fallback_is_unchanged(self):
+        record = {"title": "Unrelated", "summary": "No relevant phrase"}
+        content = ("x" * 100) + " Toyota " + ("y" * 600)
+        self.assertIn("company", news.match_news(record, "7203", TOYOTA,
+                                                  content_text=content))
+        self.assertEqual(news.match_news(record, "7203", TOYOTA), {})
+
+    def test_success_and_failure_are_terminal_and_raw_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            news.store_news(parsed(), directory)
+            raw_path = Path(directory) / "news" / "raw" / "2026-10-06.jsonl"
+            original = raw_path.read_bytes()
+            answers = [None, "Useful article body " * 5]
+            with patch.object(news, "fetch_url", side_effect=answers) as fetch, \
+                 patch.object(news, "extract", side_effect=lambda html: html), \
+                 patch.object(news.time, "sleep") as sleep:
+                first = news.enrich_news(
+                    directory, now=lambda: datetime(2026, 10, 7, tzinfo=timezone.utc),
+                )
+                second = news.enrich_news(directory)
+            raw_after = raw_path.read_bytes()
+            content_path = Path(directory) / "news" / "content" / "2026-10-07.jsonl"
+            stored = [json.loads(line) for line in content_path.read_text(
+                encoding="utf-8").splitlines()]
+        self.assertEqual(first, {"processed": 2, "success": 1,
+                                 "already_enriched": 0, "failed": 1})
+        self.assertEqual(second, {"processed": 0, "success": 0,
+                                  "already_enriched": 2, "failed": 0})
+        self.assertEqual([item["status"] for item in stored], ["failed", "success"])
+        self.assertEqual(fetch.call_count, 2)
+        sleep.assert_called_once_with(news.ENRICH_DELAY_SECONDS)
+        self.assertEqual(raw_after, original)
+
+    def test_corrupt_content_store_fails_clearly(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "news" / "content" / "2026-10-07.jsonl"
+            path.parent.mkdir(parents=True)
+            path.write_text("{broken\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "invalid news content JSON"):
+                news.load_content_urls(directory)
+
     def test_source_registry_loads_exact_minimal_verified_entries(self):
         sources = news.load_sources()
         self.assertEqual([source["source_id"] for source in sources], [

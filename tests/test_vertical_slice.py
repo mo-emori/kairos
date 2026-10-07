@@ -10,6 +10,23 @@ import main
 
 
 class VerticalSliceTest(unittest.TestCase):
+    def test_news_enrich_cli_orchestration_with_mocked_fetch_and_extract(self):
+        record = {"source": "Fixture", "published_at": "2026-10-06T00:00:00+00:00",
+                  "retrieved_at": "2026-10-07T00:00:00+00:00", "title": "Update",
+                  "summary": "", "url": "https://example.test/article"}
+        with tempfile.TemporaryDirectory() as directory:
+            news_root = Path(directory) / "news" / "raw"
+            news_root.mkdir(parents=True)
+            (news_root / "2026-10-07.jsonl").write_text(
+                json.dumps(record) + "\n", encoding="utf-8")
+            with patch("news.fetch_url", return_value="<article>body</article>"), \
+                 patch("news.extract", return_value="Extracted article text " * 4), \
+                 patch("sys.stdout", new_callable=io.StringIO) as output:
+                result = main.run_news_enrich(directory)
+        self.assertEqual(result, {"processed": 1, "success": 1,
+                                  "already_enriched": 0, "failed": 0})
+        self.assertIn("processed=1 success=1 already_enriched=0 failed=0", output.getvalue())
+
     def test_news_update_cli_orchestration_and_duplicate_counts(self):
         source = {"source_id": "official", "name": "Official",
                   "url": "https://example.test/feed.xml", "default_layer": "market",
